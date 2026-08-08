@@ -59,6 +59,19 @@
     </div>
 
     <div class="panel">
+      <h2>Canlı · WebCodecs</h2>
+      <canvas id="wcCanvas" width="320" height="180"></canvas>
+      <div class="big" id="wcFrames">—</div>
+      <div class="kv"><span class="k">FPS</span><span class="v" id="wcFps">—</span></div>
+      <div class="kv"><span class="k">Codec</span><span class="v" id="wcCodec">—</span></div>
+      <div class="kv"><span class="k">Durum</span><span class="v" id="wcState">başlatılıyor…</span></div>
+      <div class="verdict" id="wcVerdict">Sürerken bu sayaç da artıyorsa H.264'e geçebiliriz</div>
+      <p class="hint">Donanım hızlandırmalı H.264 çözme testi. Çalışırsa MPEG1'i
+         bırakıp aynı bant genişliğinde çok daha iyi görüntü verebiliriz —
+         ama kilidin buna dokunmadığını görmek şart.</p>
+    </div>
+
+    <div class="panel">
       <h2>Ses çıkışı</h2>
       <button class="btn wide" id="btnWebAudio">WEBAUDIO TONU ÇAL (3 sn)</button>
       <div class="kv"><span class="k">AudioContext state</span><span class="v" id="acState">—</span></div>
@@ -330,6 +343,201 @@
       report.live.videoCurrentTime = Number(vid.currentTime.toFixed(2));
       report.live.videoDrawable = drawable;
     }, 500);
+  })();
+
+  // ---------- live WebCodecs decode ----------
+  //
+  // Knowing VideoDecoder exists is not the same as knowing it still decodes
+  // once the car leaves Park. The Drive lockout targets <video> elements, and
+  // WebCodecs never touches one, but that is an argument rather than a
+  // measurement — so this decodes a real clip on a loop and counts frames,
+  // the same way the plain canvas test does.
+  (function () {
+    var canvas = $('wcCanvas');
+    var ctx = canvas.getContext('2d');
+
+    function state(text, cls) {
+      $('wcState').textContent = text;
+      $('wcState').className = 'v ' + (cls || '');
+      report.live.webcodecsState = text;
+    }
+
+    if (typeof VideoDecoder === 'undefined') {
+      state('VideoDecoder yok', 'fail');
+      $('wcVerdict').textContent = 'WebCodecs yok — MPEG1 yolunda kalıyoruz';
+      report.live.webcodecsSupported = false;
+      return;
+    }
+    report.live.webcodecsSupported = true;
+
+    // H.264 first because that is what YouTube already serves and what the car
+    // reports it can play; VP8 is the fallback for a build without the
+    // licensed codecs.
+    var CANDIDATES = [
+      { codec: 'avc1.42C01E', kind: 'h264' },
+      { codec: 'avc1.42E01E', kind: 'h264' },
+      { codec: 'avc1.4D401E', kind: 'h264' },
+      { codec: 'vp8', kind: 'vp8' }
+    ];
+
+    // Annex-B: every access unit begins with a delimiter NAL, so a start-code
+    // scan for type 9 gives exact frame boundaries.
+    function splitAnnexB(buf) {
+      var starts = [];
+      for (var i = 0; i < buf.length - 4; i++) {
+        var sc4 = buf[i] === 0 && buf[i + 1] === 0 && buf[i + 2] === 0 && buf[i + 3] === 1;
+        var sc3 = !sc4 && buf[i] === 0 && buf[i + 1] === 0 && buf[i + 2] === 1;
+        if (!sc3 && !sc4) continue;
+        if ((buf[i + (sc4 ? 4 : 3)] & 0x1f) === 9) starts.push(i);
+        i += sc4 ? 3 : 2;
+      }
+      return starts.map(function (s, n) {
+        var chunk = buf.subarray(s, starts[n + 1] === undefined ? buf.length : starts[n + 1]);
+        return { data: chunk, key: hasIdr(chunk) };
+      });
+    }
+
+    function hasIdr(au) {
+      for (var i = 0; i < au.length - 4; i++) {
+        var sc4 = au[i] === 0 && au[i + 1] === 0 && au[i + 2] === 0 && au[i + 3] === 1;
+        var sc3 = !sc4 && au[i] === 0 && au[i + 1] === 0 && au[i + 2] === 1;
+        if (!sc3 && !sc4) continue;
+        var t = au[i + (sc4 ? 4 : 3)] & 0x1f;
+        if (t === 5 || t === 7) return true;
+        i += sc4 ? 3 : 2;
+      }
+      return false;
+    }
+
+    // IVF: 32-byte file header, then a 12-byte header per frame carrying its
+    // size. The header's frame count is unreliable over a pipe, so it is
+    // ignored and the file is walked instead.
+    function splitIvf(buf) {
+      var frames = [];
+      var view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+      var o = 32;
+      while (o + 12 <= buf.length) {
+        var size = view.getUint32(o, true);
+        o += 12;
+        if (o + size > buf.length) break;
+        var data = buf.subarray(o, o + size);
+        frames.push({ data: data, key: (data[0] & 1) === 0 });
+        o += size;
+      }
+      return frames;
+    }
+
+    function pick() {
+      var i = 0;
+      function next() {
+        if (i >= CANDIDATES.length) {
+          state('desteklenen codec yok', 'fail');
+          $('wcVerdict').textContent = 'WebCodecs var ama hiçbir codec kabul edilmedi';
+          report.live.webcodecsCodec = null;
+          return;
+        }
+        var candidate = CANDIDATES[i++];
+        VideoDecoder.isConfigSupported({ codec: candidate.codec })
+          .then(function (result) {
+            if (result && result.supported) run(candidate);
+            else next();
+          })
+          .catch(next);
+      }
+      next();
+    }
+
+    function run(candidate) {
+      $('wcCodec').textContent = candidate.codec;
+      report.live.webcodecsCodec = candidate.codec;
+      state('örnek indiriliyor…');
+
+      fetch('/api/testcodec?c=' + candidate.kind)
+        .then(function (r) { return r.arrayBuffer(); })
+        .then(function (ab) {
+          var buf = new Uint8Array(ab);
+          var frames = candidate.kind === 'vp8' ? splitIvf(buf) : splitAnnexB(buf);
+          if (!frames.length) {
+            state('örnek çözümlenemedi', 'fail');
+            return;
+          }
+          decodeLoop(candidate, frames);
+        })
+        .catch(function (err) { state('indirme hatası: ' + err.message, 'fail'); });
+    }
+
+    function decodeLoop(candidate, frames) {
+      var decoded = 0;
+      var windowFrames = 0;
+      var last = performance.now();
+      var index = 0;
+      var stamp = 0;
+      var decoder;
+
+      function build() {
+        decoder = new VideoDecoder({
+          output: function (frame) {
+            decoded++;
+            windowFrames++;
+            try { ctx.drawImage(frame, 0, 0, canvas.width, canvas.height); } catch (e) { /* frame closed */ }
+            frame.close();
+            $('wcFrames').textContent = decoded;
+            report.live.webcodecsFrames = decoded;
+          },
+          error: function (err) {
+            state('decoder hatası: ' + err.message, 'fail');
+            report.live.webcodecsError = err.message;
+          }
+        });
+        decoder.configure({ codec: candidate.codec, optimizeForLatency: true });
+      }
+
+      build();
+      state('çözülüyor', 'ok');
+
+      setInterval(function () {
+        var now = performance.now();
+        if (now - last >= 1000) {
+          var fps = Math.round((windowFrames * 1000) / (now - last));
+          $('wcFps').textContent = fps;
+          report.live.webcodecsFps = fps;
+          windowFrames = 0;
+          last = now;
+        }
+      }, 500);
+
+      // Paced at the clip's own frame rate so the queue never runs away; a
+      // backed-up decoder would report throughput the link cannot sustain.
+      setInterval(function () {
+        if (!decoder || decoder.state !== 'configured') return;
+        if (decoder.decodeQueueSize > 8) return;
+
+        // Each pass must start on a keyframe, so restart the loop at one.
+        if (index >= frames.length) index = 0;
+        var frame = frames[index];
+        if (index === 0 && !frame.key) {
+          var k = frames.findIndex(function (f) { return f.key; });
+          if (k === -1) return;
+          index = k;
+          frame = frames[k];
+        }
+        index++;
+        stamp += Math.round(1e6 / 15);
+
+        try {
+          decoder.decode(new EncodedVideoChunk({
+            type: frame.key ? 'key' : 'delta',
+            timestamp: stamp,
+            data: frame.data
+          }));
+        } catch (err) {
+          state('decode hatası: ' + err.message, 'fail');
+          report.live.webcodecsError = err.message;
+        }
+      }, 1000 / 15);
+    }
+
+    pick();
   })();
 
   // ---------- audio ----------

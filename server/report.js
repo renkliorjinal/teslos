@@ -72,6 +72,9 @@ function compare() {
   const rows = [
     ['canvas fps', (r) => r.live?.canvasFps],
     ['canvas frames', (r) => r.live?.canvasFrames],
+    ['WebCodecs fps', (r) => r.live?.webcodecsFps],
+    ['WebCodecs frames', (r) => r.live?.webcodecsFrames],
+    ['WebCodecs codec', (r) => r.live?.webcodecsCodec],
     ['<video> paused', (r) => r.live?.videoPaused],
     ['<video> drawable', (r) => r.live?.videoDrawable],
     ['AudioContext', (r) => r.live?.audioContextState],
@@ -110,6 +113,15 @@ function compare() {
     console.log(`  ${YELLOW}Canvas only managed ${fps} fps in Drive — throttled but alive.${OFF}`);
   } else {
     console.log(`  ${RED}Canvas froze in Drive. This transport cannot work.${OFF}`);
+  }
+
+  const wcFps = Number(driveReport.live?.webcodecsFps) || 0;
+  const wcFrames = Number(driveReport.live?.webcodecsFrames) || 0;
+  if (wcFrames > 0 && wcFps > 0) {
+    console.log(`  ${GREEN}WebCodecs also kept decoding in Drive (${wcFps} fps, ${driveReport.live.webcodecsCodec}).${OFF}`);
+    console.log(`  ${DIM}The lockout does not reach it. Switch the transport to H.264.${OFF}`);
+  } else if (driveReport.live?.webcodecsSupported) {
+    console.log(`  ${YELLOW}WebCodecs stopped decoding in Drive — stay on the MPEG1 path.${OFF}`);
   }
 
   const ac = driveReport.live?.audioContextState;
@@ -171,6 +183,11 @@ console.log(`\n${BOLD}Live measurements${OFF}`);
 line('Canvas frames / fps', `${live.canvasFrames ?? '?'} @ ${live.canvasFps ?? '?'} fps`);
 line('<video> paused', live.videoPaused === undefined ? '?' : String(live.videoPaused));
 line('<video> drawable', live.videoDrawable === undefined ? '?' : String(live.videoDrawable));
+line('WebCodecs decode', live.webcodecsSupported === false
+  ? 'no VideoDecoder'
+  : live.webcodecsFrames
+    ? `${live.webcodecsFrames} frames @ ${live.webcodecsFps ?? '?'} fps  ${DIM}${live.webcodecsCodec || ''}${OFF}`
+    : live.webcodecsState || 'not tested');
 line('AudioContext', live.audioContextState || 'not tested');
 line('<audio> element', live.audioElementPlaying === undefined ? 'not tested' : String(live.audioElementPlaying));
 line('Link speed', live.linkMbps ? `${live.linkMbps} Mbit/s — ${live.linkAdvice || ''}` : 'not tested');
@@ -211,9 +228,17 @@ if (!acState || acState === 'not tested') {
 // plain JavaScript on the firmware the approach was built against. A browser
 // new enough to expose WebCodecs can decode H.264 directly, which is worth
 // far more than any tuning of the current pipeline.
-if (apis['WebCodecs VideoDecoder']) {
-  console.log(`  ${GREEN}WebCodecs is available — H.264 would beat MPEG1 badly at the same bitrate.${OFF}`);
-  console.log(`  ${DIM}Worth rebuilding the transport around it.${OFF}`);
+// An API that exists is not an API that works, so prefer the decode result
+// over the feature-detection flag whenever the probe actually ran one.
+if (live.webcodecsFrames > 0) {
+  const codec = live.webcodecsCodec || 'unknown codec';
+  console.log(`  ${GREEN}WebCodecs really decoded ${live.webcodecsFrames} frames of ${codec}.${OFF}`);
+  if (/^avc1/.test(codec)) {
+    console.log(`  ${GREEN}H.264 decoding works — worth rebuilding the transport around it.${OFF}`);
+    console.log(`  ${DIM}It beats MPEG1 badly at the same bitrate and costs the server far less.${OFF}`);
+  }
+} else if (apis['WebCodecs VideoDecoder']) {
+  console.log(`  ${YELLOW}VideoDecoder exists but decoded nothing${live.webcodecsError ? `: ${live.webcodecsError}` : ' in this report'}.${OFF}`);
 }
 if (apis.RTCPeerConnection) {
   console.log(`  ${GREEN}WebRTC is available — a much simpler transport than MPEG1-over-WebSocket.${OFF}`);

@@ -91,6 +91,33 @@ router.get('/testclip.mp4', (req, res) => {
   pipeFfmpeg(res, args, 'video/mp4');
 });
 
+// A short clip of raw encoded frames for the probe's WebCodecs test. H.264
+// arrives as Annex-B with access unit delimiters, so frame boundaries are
+// trivial to find; VP8 arrives as IVF, whose per-frame headers carry sizes.
+// Two codecs because a browser may well have WebCodecs without H.264.
+router.get('/testcodec', (req, res) => {
+  const source = ['-f', 'lavfi', '-i', 'testsrc=size=320x180:rate=15:duration=3'];
+  const args = ['-hide_banner', '-loglevel', 'error', ...source];
+
+  if (req.query.c === 'vp8') {
+    args.push(
+      '-c:v', 'libvpx', '-b:v', '400k', '-deadline', 'realtime', '-cpu-used', '8',
+      '-g', '15', '-pix_fmt', 'yuv420p', '-f', 'ivf', '-',
+    );
+  } else {
+    args.push(
+      '-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'zerolatency',
+      '-profile:v', 'baseline', '-level', '3.0', '-bf', '0', '-g', '15',
+      '-pix_fmt', 'yuv420p',
+      // Access unit delimiters turn frame splitting into a start-code scan.
+      '-bsf:v', 'h264_metadata=aud=insert',
+      '-f', 'h264', '-',
+    );
+  }
+
+  pipeFfmpeg(res, args, 'application/octet-stream');
+});
+
 router.get('/testtone.mp3', (req, res) => {
   const args = [
     '-hide_banner', '-loglevel', 'error',
