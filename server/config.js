@@ -1,0 +1,57 @@
+'use strict';
+
+const fs = require('fs');
+const path = require('path');
+
+// Minimal .env loader so the project stays dependency-light. Values already
+// present in the real environment win, which keeps systemd overrides working.
+function loadEnvFile(file) {
+  if (!fs.existsSync(file)) return;
+  for (const rawLine of fs.readFileSync(file, 'utf8').split('\n')) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#')) continue;
+    const eq = line.indexOf('=');
+    if (eq === -1) continue;
+    const key = line.slice(0, eq).trim();
+    if (process.env[key] !== undefined) continue;
+    let value = line.slice(eq + 1).trim();
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.slice(1, -1);
+    }
+    process.env[key] = value;
+  }
+}
+
+loadEnvFile(path.join(__dirname, '..', '.env'));
+
+// Quality presets. MPEG1 has no modern rate-distortion tricks, so bitrates run
+// higher than an H.264 equivalent would at the same resolution.
+const QUALITY = {
+  360: { scale: '640:360', videoBitrate: '600k' },
+  480: { scale: '854:480', videoBitrate: '1000k' },
+  720: { scale: '1280:720', videoBitrate: '1800k' },
+  1080: { scale: '1920:1080', videoBitrate: '3000k' },
+};
+
+const DEFAULT_QUALITY = QUALITY[process.env.DEFAULT_QUALITY] ? Number(process.env.DEFAULT_QUALITY) : 480;
+
+module.exports = {
+  port: Number(process.env.PORT) || 8742,
+  bind: process.env.BIND || '127.0.0.1',
+  ytDlp: process.env.YT_DLP || 'yt-dlp',
+  ffmpeg: process.env.FFMPEG || 'ffmpeg',
+  cookies: process.env.YT_DLP_COOKIES || '',
+  maxSessions: Number(process.env.MAX_SESSIONS) || 2,
+  publicDir: path.join(__dirname, '..', 'public'),
+  reportsDir: path.join(__dirname, '..', 'probe-reports'),
+  QUALITY,
+  DEFAULT_QUALITY,
+
+  resolveQuality(value) {
+    const n = Number(value);
+    return QUALITY[n] ? n : DEFAULT_QUALITY;
+  },
+};

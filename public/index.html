@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>teslos</title>
+<link rel="icon" href="/favicon.svg">
+<link rel="stylesheet" href="/shared/style.css">
+<style>
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 14px; }
+  .tile { display: block; text-decoration: none; color: inherit; background: var(--panel);
+          border: 1px solid var(--line); border-radius: 12px; padding: 22px; }
+  .tile:active { opacity: .6; }
+  .tile h2 { margin: 0 0 6px; font-size: 1.2rem; color: var(--accent); }
+  .tile p { margin: 0; color: var(--muted); font-size: .92rem; line-height: 1.45; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>teslos</h1>
+  <p class="sub">Tesla tarayıcısı için canvas tabanlı video oynatma</p>
+
+  <div class="tiles">
+    <a class="tile" href="/probe/">
+      <h2>1 · Probe</h2>
+      <p>Önce bunu çalıştır. Arabanın tarayıcısında hangi API'lerin açık olduğunu,
+         Drive modunda canvas ve sesin çalışıp çalışmadığını ölçer.</p>
+    </a>
+    <a class="tile" href="/player/">
+      <h2>2 · Oynatıcı</h2>
+      <p>YouTube video oynatıcı. MPEG1-TS akışını WebSocket üzerinden alıp
+         canvas'a çizer, <code>&lt;video&gt;</code> elementine hiç dokunmaz.</p>
+    </a>
+  </div>
+
+  <div class="panel" style="margin-top:18px">
+    <p class="muted" style="margin:0;font-size:.9rem;line-height:1.6">
+      Sürücünün araç hareket halindeyken video izlemesi Türkiye dahil çoğu ülkede
+      yasaktır. Bu kilit tam da bu yüzden var.
+    </p>
+  </div>
+</div>
+</body>
+</html>

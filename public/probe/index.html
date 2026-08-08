@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<title>teslos · probe</title>
+<link rel="icon" href="/favicon.svg">
+<link rel="stylesheet" href="/shared/style.css">
+<style>
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 14px; align-items: start; }
+  .kv { display: flex; justify-content: space-between; gap: 12px; padding: 5px 0;
+        border-bottom: 1px solid #191926; font-size: .85rem; }
+  .kv:last-child { border-bottom: none; }
+  .kv .k { color: var(--muted); }
+  .kv .v { font-weight: 600; text-align: right; }
+  h2 { font-size: 1rem; margin: 0 0 10px; color: var(--accent); text-transform: uppercase; letter-spacing: .05em; }
+  canvas { width: 100%; background: #000; border-radius: 8px; display: block; }
+  video { width: 100%; border-radius: 8px; background: #000; display: block; }
+  .big { font-size: 2rem; font-weight: 700; text-align: center; padding: 6px 0; }
+  .hint { font-size: .82rem; color: var(--muted); line-height: 1.5; margin: 8px 0 0; }
+  .verdict { padding: 10px; border-radius: 8px; text-align: center; font-weight: 700; margin-top: 8px; background: #0b0b14; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>teslos · probe</h1>
+  <p class="sub" id="headline">Ölçülüyor…</p>
+
+  <div class="panel" style="border-color:#00779e">
+    <h2>Nasıl kullanılır</h2>
+    <p class="hint" style="margin:0">
+      Bu sayfayı <b>önce park halinde</b> aç, testleri çalıştır, <b>RAPOR ÜRET</b>'e bas.
+      Sonra <b>aynı sekmeyi açık tutarak</b> sür ve aşağıdaki üç canlı göstergeye bak:
+      canvas sayacı artmaya devam ediyor mu, <code>&lt;video&gt;</code> duruyor mu, ses geliyor mu.
+      Bu üç cevap mimarinin tamamını belirliyor.
+    </p>
+  </div>
+
+  <div class="grid">
+
+    <div class="panel">
+      <h2>Canlı · Canvas</h2>
+      <canvas id="cv" width="480" height="150"></canvas>
+      <div class="big" id="cvCount">0</div>
+      <div class="kv"><span class="k">FPS</span><span class="v" id="cvFps">—</span></div>
+      <div class="verdict" id="cvVerdict">Sürerken sayaç artıyorsa canvas yolu açık</div>
+      <p class="hint">Bu, projenin dayandığı yol. Drive'da durursa hiçbir şey çalışmaz.</p>
+    </div>
+
+    <div class="panel">
+      <h2>Canlı · &lt;video&gt; elementi</h2>
+      <video id="vid" muted loop playsinline preload="auto"></video>
+      <div class="kv"><span class="k">paused</span><span class="v" id="vidPaused">—</span></div>
+      <div class="kv"><span class="k">currentTime</span><span class="v" id="vidTime">—</span></div>
+      <div class="kv"><span class="k">canvas'a çizilebiliyor</span><span class="v" id="vidDraw">—</span></div>
+      <p class="hint">Beklenen: Drive'da <code>paused = true</code>'ya düşer ve
+         <code>drawImage</code> siyah verir. Kilidin kendisi budur.</p>
+    </div>
+
+    <div class="panel">
+      <h2>Ses çıkışı</h2>
+      <button class="btn wide" id="btnWebAudio">WEBAUDIO TONU ÇAL (3 sn)</button>
+      <div class="kv"><span class="k">AudioContext state</span><span class="v" id="acState">—</span></div>
+      <button class="btn wide" id="btnAudioEl" style="margin-top:10px">&lt;AUDIO&gt; TONU ÇAL</button>
+      <div class="kv"><span class="k">&lt;audio&gt; paused</span><span class="v" id="auPaused">—</span></div>
+      <p class="hint">Drive'da WebAudio susarsa oynatıcı otomatik olarak
+         ayrı <code>&lt;audio&gt;</code> akışına düşecek. Hangisinin çaldığını burada gör.</p>
+    </div>
+
+    <div class="panel">
+      <h2>Bağlantı hızı</h2>
+      <button class="btn wide" id="btnSpeed">HIZ TESTİ (6 sn)</button>
+      <div class="big" id="speedVal">—</div>
+      <div class="kv"><span class="k">Aktarılan</span><span class="v" id="speedBytes">—</span></div>
+      <div class="verdict" id="speedVerdict">Kalite ön ayarını bu belirler</div>
+      <p class="hint">360p ≈ 0,7 Mbit/s · 480p ≈ 1,1 · 720p ≈ 1,9 · 1080p ≈ 3,1
+         (ses dahil, tepe değil ortalama).</p>
+    </div>
+
+    <div class="panel">
+      <h2>API'ler</h2>
+      <div id="apis"></div>
+    </div>
+
+    <div class="panel">
+      <h2>Codec'ler</h2>
+      <div id="codecs"></div>
+    </div>
+
+    <div class="panel">
+      <h2>Sistem</h2>
+      <div id="sys"></div>
+    </div>
+
+    <div class="panel">
+      <h2>WebGL</h2>
+      <div id="webgl"></div>
+    </div>
+
+  </div>
+
+  <div class="panel">
+    <button class="btn wide primary" id="btnReport">RAPOR ÜRET VE SUNUCUYA GÖNDER</button>
+    <pre class="mono" id="reportBox" style="display:none;white-space:pre-wrap;max-height:340px;overflow:auto;background:#05050c;padding:10px;border-radius:8px"></pre>
+  </div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  var $ = function (id) { return document.getElementById(id); };
+  var report = { generatedAt: new Date().toISOString(), live: {} };
+
+  function row(container, key, value, cls) {
+    var d = document.createElement('div');
+    d.className = 'kv';
+    d.innerHTML = '<span class="k"></span><span class="v"></span>';
+    d.children[0].textContent = key;
+    d.children[1].textContent = value;
+    if (cls) d.children[1].className = 'v ' + cls;
+    container.appendChild(d);
+  }
+
+  // ---------- system ----------
+  var ua = navigator.userAgent;
+  var isTesla = /QtCarBrowser|Tesla/i.test(ua);
+  $('headline').textContent = isTesla
+    ? 'Tesla tarayıcısı algılandı'
+    : 'Standart tarayıcı (referans ölçüm — asıl sonuç arabada alınmalı)';
+
+  var sys = {
+    userAgent: ua,
+    teslaDetected: isTesla,
+    chromium: (ua.match(/Chrome\/([\d.]+)/) || [])[1] || 'bilinmiyor',
+    qtWebEngine: (ua.match(/QtWebEngine\/([\d.]+)/) || [])[1] || 'yok',
+    platform: navigator.platform || '?',
+    language: navigator.language,
+    cores: navigator.hardwareConcurrency || '?',
+    deviceMemoryGB: navigator.deviceMemory || '?',
+    maxTouchPoints: navigator.maxTouchPoints || 0,
+    screen: screen.width + 'x' + screen.height,
+    viewport: window.innerWidth + 'x' + window.innerHeight,
+    devicePixelRatio: window.devicePixelRatio || 1
+  };
+  report.system = sys;
+  Object.keys(sys).forEach(function (k) {
+    if (k !== 'userAgent') row($('sys'), k, String(sys[k]));
+  });
+  row($('sys'), 'userAgent', ua);
+
+  // ---------- APIs ----------
+  var apiTests = {
+    WebSocket: typeof WebSocket !== 'undefined',
+    WebAssembly: typeof WebAssembly !== 'undefined',
+    'Canvas 2D': !!document.createElement('canvas').getContext('2d'),
+    WebGL: (function () {
+      try { return !!document.createElement('canvas').getContext('webgl'); } catch (e) { return false; }
+    })(),
+    WebGL2: (function () {
+      try { return !!document.createElement('canvas').getContext('webgl2'); } catch (e) { return false; }
+    })(),
+    createImageBitmap: typeof createImageBitmap !== 'undefined',
+    OffscreenCanvas: typeof OffscreenCanvas !== 'undefined',
+    AudioContext: typeof AudioContext !== 'undefined' || typeof webkitAudioContext !== 'undefined',
+    MediaSource: typeof MediaSource !== 'undefined',
+    'ManagedMediaSource': typeof self.ManagedMediaSource !== 'undefined',
+    'WebCodecs VideoDecoder': typeof VideoDecoder !== 'undefined',
+    'WebCodecs AudioDecoder': typeof AudioDecoder !== 'undefined',
+    RTCPeerConnection: typeof RTCPeerConnection !== 'undefined',
+    getUserMedia: !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia),
+    getDisplayMedia: !!(navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia),
+    MediaRecorder: typeof MediaRecorder !== 'undefined',
+    'canvas.captureStream': typeof HTMLCanvasElement.prototype.captureStream === 'function',
+    requestVideoFrameCallback: typeof HTMLVideoElement !== 'undefined' &&
+      typeof HTMLVideoElement.prototype.requestVideoFrameCallback === 'function',
+    PictureInPicture: !!document.pictureInPictureEnabled,
+    Fullscreen: !!(document.fullscreenEnabled || document.webkitFullscreenEnabled),
+    ServiceWorker: 'serviceWorker' in navigator,
+    WakeLock: 'wakeLock' in navigator,
+    Gamepad: typeof navigator.getGamepads === 'function',
+    SharedArrayBuffer: typeof SharedArrayBuffer !== 'undefined',
+    crossOriginIsolated: !!self.crossOriginIsolated
+  };
+  report.apis = apiTests;
+  Object.keys(apiTests).forEach(function (k) {
+    row($('apis'), k, apiTests[k] ? 'var' : 'yok', apiTests[k] ? 'ok' : 'fail');
+  });
+
+  // ---------- codecs ----------
+  var v = document.createElement('video');
+  var a = document.createElement('audio');
+  var codecList = [
+    ['H.264 (video)', v, 'video/mp4; codecs="avc1.42E01E"'],
+    ['H.265 (video)', v, 'video/mp4; codecs="hvc1.1.6.L93.B0"'],
+    ['VP8 (video)', v, 'video/webm; codecs="vp8"'],
+    ['VP9 (video)', v, 'video/webm; codecs="vp09.00.10.08"'],
+    ['AV1 (video)', v, 'video/mp4; codecs="av01.0.05M.08"'],
+    ['MP3 (ses)', a, 'audio/mpeg'],
+    ['AAC (ses)', a, 'audio/mp4; codecs="mp4a.40.2"'],
+    ['Opus (ses)', a, 'audio/webm; codecs="opus"']
+  ];
+  var codecs = {};
+  codecList.forEach(function (entry) {
+    var result = entry[1].canPlayType(entry[2]) || 'no';
+    codecs[entry[0]] = result;
+    row($('codecs'), entry[0], result === '' ? 'no' : result,
+      result === 'probably' ? 'ok' : result === 'maybe' ? 'warn' : 'fail');
+  });
+  // MSE tells a different story from canPlayType and is what a DASH player would use.
+  if (typeof MediaSource !== 'undefined' && MediaSource.isTypeSupported) {
+    var mseH264 = MediaSource.isTypeSupported('video/mp4; codecs="avc1.42E01E"');
+    codecs['MSE H.264'] = mseH264;
+    row($('codecs'), 'MSE H.264', mseH264 ? 'var' : 'yok', mseH264 ? 'ok' : 'fail');
+  }
+  report.codecs = codecs;
+
+  // ---------- WebGL detail ----------
+  (function () {
+    var gl = null;
+    try { gl = document.createElement('canvas').getContext('webgl'); } catch (e) { /* unsupported */ }
+    if (!gl) { row($('webgl'), 'WebGL', 'yok', 'fail'); report.webgl = null; return; }
+    var dbg = gl.getExtension('WEBGL_debug_renderer_info');
+    var info = {
+      vendor: dbg ? gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL) : gl.getParameter(gl.VENDOR),
+      renderer: dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER),
+      version: gl.getParameter(gl.VERSION),
+      maxTextureSize: gl.getParameter(gl.MAX_TEXTURE_SIZE)
+    };
+    report.webgl = info;
+    Object.keys(info).forEach(function (k) { row($('webgl'), k, String(info[k])); });
+  })();
+
+  // ---------- live canvas ----------
+  (function () {
+    var canvas = $('cv');
+    var ctx = canvas.getContext('2d');
+    var frames = 0;
+    var fpsFrames = 0;
+    var last = performance.now();
+
+    function draw(now) {
+      frames++;
+      fpsFrames++;
+      if (now - last >= 1000) {
+        var fps = Math.round((fpsFrames * 1000) / (now - last));
+        $('cvFps').textContent = fps;
+        report.live.canvasFps = fps;
+        fpsFrames = 0;
+        last = now;
+      }
+      ctx.fillStyle = '#000';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      // A sweeping bar makes a frozen canvas obvious at a glance.
+      var x = (frames * 6) % (canvas.width + 120) - 120;
+      var grad = ctx.createLinearGradient(x, 0, x + 120, 0);
+      grad.addColorStop(0, '#00c8ff00');
+      grad.addColorStop(0.5, '#00c8ff');
+      grad.addColorStop(1, '#00c8ff00');
+      ctx.fillStyle = grad;
+      ctx.fillRect(x, 0, 120, canvas.height);
+      ctx.fillStyle = '#fff';
+      ctx.font = 'bold 42px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText(String(frames), canvas.width / 2, canvas.height / 2 + 15);
+      $('cvCount').textContent = frames;
+      report.live.canvasFrames = frames;
+      requestAnimationFrame(draw);
+    }
+    requestAnimationFrame(draw);
+  })();
+
+  // ---------- live <video> ----------
+  (function () {
+    var vid = $('vid');
+    var probeCanvas = document.createElement('canvas');
+    probeCanvas.width = 32;
+    probeCanvas.height = 18;
+    var pctx = probeCanvas.getContext('2d', { willReadFrequently: true });
+
+    vid.src = '/api/testclip.mp4';
+    var playAttempt = vid.play();
+    if (playAttempt && playAttempt.catch) {
+      playAttempt.catch(function (err) { $('vidPaused').textContent = 'play() reddedildi: ' + err.name; });
+    }
+
+    setInterval(function () {
+      $('vidPaused').textContent = vid.paused ? 'true (duraklatıldı)' : 'false (oynuyor)';
+      $('vidPaused').className = 'v ' + (vid.paused ? 'fail' : 'ok');
+      $('vidTime').textContent = vid.currentTime.toFixed(2) + ' s';
+
+      // Non-black pixels mean drawImage still yields real frames.
+      var drawable = false;
+      try {
+        pctx.drawImage(vid, 0, 0, probeCanvas.width, probeCanvas.height);
+        var data = pctx.getImageData(0, 0, probeCanvas.width, probeCanvas.height).data;
+        for (var i = 0; i < data.length; i += 4) {
+          if (data[i] > 12 || data[i + 1] > 12 || data[i + 2] > 12) { drawable = true; break; }
+        }
+      } catch (e) {
+        drawable = false;
+      }
+      $('vidDraw').textContent = drawable ? 'evet' : 'hayır (siyah)';
+      $('vidDraw').className = 'v ' + (drawable ? 'ok' : 'fail');
+
+      report.live.videoPaused = vid.paused;
+      report.live.videoCurrentTime = Number(vid.currentTime.toFixed(2));
+      report.live.videoDrawable = drawable;
+    }, 500);
+  })();
+
+  // ---------- audio ----------
+  var audioEl = new Audio();
+  audioEl.preload = 'none';
+
+  $('btnWebAudio').addEventListener('click', function () {
+    try {
+      var Ctx = window.AudioContext || window.webkitAudioContext;
+      var ctx = new Ctx();
+      ctx.resume();
+      var osc = ctx.createOscillator();
+      var gain = ctx.createGain();
+      gain.gain.value = 0.15;
+      osc.frequency.value = 440;
+      osc.connect(gain).connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 3);
+
+      var tick = setInterval(function () {
+        $('acState').textContent = ctx.state;
+        $('acState').className = 'v ' + (ctx.state === 'running' ? 'ok' : 'warn');
+        report.live.audioContextState = ctx.state;
+      }, 300);
+      setTimeout(function () { clearInterval(tick); ctx.close(); }, 3500);
+    } catch (err) {
+      $('acState').textContent = 'hata: ' + err.message;
+      $('acState').className = 'v fail';
+      report.live.audioContextState = 'error: ' + err.message;
+    }
+  });
+
+  $('btnAudioEl').addEventListener('click', function () {
+    audioEl.src = '/api/testtone.mp3';
+    audioEl.play().then(function () {
+      $('auPaused').textContent = 'oynuyor';
+      $('auPaused').className = 'v ok';
+      report.live.audioElementPlaying = true;
+    }).catch(function (err) {
+      $('auPaused').textContent = 'reddedildi: ' + err.name;
+      $('auPaused').className = 'v fail';
+      report.live.audioElementPlaying = 'error: ' + err.name;
+    });
+  });
+
+  // ---------- link speed ----------
+  $('btnSpeed').addEventListener('click', function () {
+    var btn = this;
+    btn.disabled = true;
+    $('speedVal').textContent = 'ölçülüyor…';
+
+    var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    var ws = new WebSocket(proto + '//' + location.host + '/ws/speedtest');
+    ws.binaryType = 'arraybuffer';
+
+    var bytes = 0;
+    var started = 0;
+
+    ws.onopen = function () { started = performance.now(); };
+    ws.onmessage = function (ev) {
+      bytes += ev.data.byteLength || ev.data.size || 0;
+      var mbps = (bytes * 8) / ((performance.now() - started) / 1000) / 1e6;
+      $('speedVal').textContent = mbps.toFixed(2) + ' Mbit/s';
+      $('speedBytes').textContent = (bytes / 1048576).toFixed(1) + ' MB';
+    };
+    ws.onclose = function () {
+      btn.disabled = false;
+      var elapsed = (performance.now() - started) / 1000;
+      var mbps = elapsed > 0 ? (bytes * 8) / elapsed / 1e6 : 0;
+      report.live.linkMbps = Number(mbps.toFixed(2));
+
+      var advice = mbps >= 3.5 ? '1080p rahat' :
+                   mbps >= 2.2 ? '720p rahat' :
+                   mbps >= 1.4 ? '480p rahat, 720p sınırda' :
+                   mbps >= 0.9 ? '360p güvenli' : 'çok düşük — 360p bile zorlanabilir';
+      $('speedVerdict').textContent = mbps.toFixed(2) + ' Mbit/s → ' + advice;
+      $('speedVerdict').className = 'verdict ' + (mbps >= 1.4 ? 'ok' : mbps >= 0.9 ? 'warn' : 'fail');
+      report.live.linkAdvice = advice;
+    };
+    ws.onerror = function () {
+      $('speedVal').textContent = 'bağlantı hatası';
+      btn.disabled = false;
+    };
+  });
+
+  // ---------- report ----------
+  $('btnReport').addEventListener('click', function () {
+    report.generatedAt = new Date().toISOString();
+    var text = JSON.stringify(report, null, 2);
+    var box = $('reportBox');
+    box.style.display = 'block';
+    box.textContent = text;
+
+    fetch('/api/probe-report', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: text
+    }).then(function (r) {
+      box.textContent = (r.ok ? '// sunucuya kaydedildi\n' : '// gönderilemedi\n') + text;
+    }).catch(function (err) {
+      box.textContent = '// gönderilemedi: ' + err.message + '\n' + text;
+    });
+  });
+})();
+</script>
+</body>
+</html>

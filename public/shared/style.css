@@ -1,0 +1,125 @@
+/* Sized for the Tesla centre screen: roughly a 1900x1080 browser viewport on
+   Model 3/Y. Touch targets are deliberately large — this is a capacitive screen
+   used at arm's length, not a desktop. */
+
+:root {
+  --bg: #07070c;
+  --panel: #11111c;
+  --panel-2: #171727;
+  --line: #262636;
+  --text: #e8e8f0;
+  --muted: #8b8b9e;
+  --accent: #00c8ff;
+  --ok: #4ade80;
+  --warn: #fbbf24;
+  --fail: #f87171;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+  -webkit-tap-highlight-color: transparent;
+}
+
+a {
+  color: var(--accent);
+}
+
+.wrap {
+  max-width: 1600px;
+  margin: 0 auto;
+  padding: 20px;
+}
+
+h1 {
+  font-size: 1.5rem;
+  margin: 0 0 4px;
+}
+
+.sub {
+  color: var(--muted);
+  font-size: 0.95rem;
+  margin: 0 0 20px;
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 16px;
+  margin-bottom: 14px;
+}
+
+.btn {
+  appearance: none;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  color: var(--text);
+  border-radius: 10px;
+  padding: 16px 22px;
+  font-size: 1.05rem;
+  font-weight: 600;
+  cursor: pointer;
+  min-height: 58px;
+}
+
+.btn:active {
+  opacity: 0.6;
+}
+
+.btn.primary {
+  background: #00506b;
+  border-color: #00779e;
+}
+
+.btn.wide {
+  width: 100%;
+}
+
+.input {
+  width: 100%;
+  padding: 16px;
+  font-size: 1.05rem;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: #0b0b14;
+  color: var(--text);
+  min-height: 58px;
+}
+
+.row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.78rem;
+  word-break: break-all;
+}
+
+.ok {
+  color: var(--ok);
+}
+
+.warn {
+  color: var(--warn);
+}
+
+.fail {
+  color: var(--fail);
+}
+
+.muted {
+  color: var(--muted);
+}

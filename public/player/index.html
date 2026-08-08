@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<title>teslos · oynatıcı</title>
+<link rel="icon" href="/favicon.svg">
+<link rel="stylesheet" href="/shared/style.css">
+<style>
+  body { overflow: hidden; }
+  .stage { position: relative; width: 100vw; height: 100vh; background: #000; }
+  /* The decode buffer is only as big as the quality preset (854x480 at the
+     default), so the canvas has to be scaled up to the car's ~1900x1080
+     viewport. object-fit does the letterboxing; without it the canvas would
+     render at its intrinsic size as a small window in the middle of the
+     screen. Verified to letterbox rather than stretch on Chromium. */
+  #screen { width: 100%; height: 100%; object-fit: contain; display: block; }
+
+  .overlay { position: absolute; inset: 0; background: rgba(5,5,10,.94);
+             display: flex; align-items: center; justify-content: center; padding: 20px; z-index: 20; }
+  .overlay.hidden { display: none; }
+  .picker { width: min(760px, 100%); max-height: 92vh; overflow-y: auto; }
+
+  .results { margin-top: 12px; }
+  .result { display: flex; gap: 12px; align-items: center; padding: 14px;
+            border: 1px solid var(--line); border-radius: 10px; margin-bottom: 8px;
+            background: var(--panel-2); cursor: pointer; }
+  .result:active { opacity: .6; }
+  .result .t { flex: 1; min-width: 0; }
+  .result .t b { display: block; font-size: 1rem; overflow: hidden;
+                 text-overflow: ellipsis; white-space: nowrap; }
+  .result .t span { color: var(--muted); font-size: .84rem; }
+  .result .d { color: var(--muted); font-variant-numeric: tabular-nums; font-size: .9rem; }
+
+  .bar { position: absolute; left: 0; right: 0; bottom: 0; z-index: 10;
+         background: linear-gradient(transparent, rgba(4,4,9,.93) 22%);
+         padding: 44px 20px 16px; transition: opacity .25s; }
+  .bar.dim { opacity: 0; pointer-events: none; }
+
+  .seek { height: 34px; display: flex; align-items: center; cursor: pointer; }
+  .seek .track { position: relative; width: 100%; height: 8px; border-radius: 4px; background: #2c2c3e; }
+  .seek .fill { position: absolute; inset: 0 auto 0 0; border-radius: 4px; background: var(--accent); width: 0; }
+  .seek .knob { position: absolute; top: 50%; width: 22px; height: 22px; border-radius: 50%;
+                background: #fff; transform: translate(-50%, -50%); left: 0; }
+
+  .controls { display: flex; align-items: center; gap: 10px; margin-top: 8px; flex-wrap: wrap; }
+  .time { font-variant-numeric: tabular-nums; font-size: .95rem; color: var(--muted); min-width: 130px; }
+  .title { flex: 1; min-width: 160px; font-weight: 600; overflow: hidden;
+           text-overflow: ellipsis; white-space: nowrap; }
+  .status { font-size: .82rem; color: var(--muted); min-width: 150px; text-align: right; }
+
+  .chip { padding: 12px 16px; border-radius: 9px; border: 1px solid var(--line);
+          background: var(--panel-2); font-size: .9rem; font-weight: 600; cursor: pointer; min-height: 48px; }
+  .chip.on { background: #00506b; border-color: #00779e; }
+  .chip:active { opacity: .6; }
+
+  /* Drift correction only means anything for the separate <audio> path. */
+  .nudge { display: none; }
+  body.separate-audio .nudge { display: inline-block; }
+
+  .toast { position: absolute; top: 20px; left: 50%; transform: translateX(-50%); z-index: 30;
+           background: #2a1116; border: 1px solid #742; color: #ffb4b4; padding: 14px 20px;
+           border-radius: 10px; font-size: .95rem; max-width: 80vw; display: none; }
+</style>
+</head>
+<body>
+<div class="stage">
+  <canvas id="screen"></canvas>
+  <div class="toast" id="toast"></div>
+
+  <div class="overlay" id="overlay">
+    <div class="picker">
+      <h1>teslos</h1>
+      <p class="sub">YouTube bağlantısı yapıştır ya da ara</p>
+
+      <div class="row">
+        <input class="input" id="q" style="flex:1;min-width:260px"
+               placeholder="YouTube linki, video kimliği veya arama terimi"
+               autocomplete="off" autocapitalize="off" spellcheck="false">
+        <button class="btn primary" id="go">AÇ</button>
+      </div>
+
+      <div class="row" style="margin-top:12px">
+        <span class="muted" style="font-size:.88rem">Kalite:</span>
+        <button class="chip" data-q="360">360p</button>
+        <button class="chip" data-q="480">480p</button>
+        <button class="chip" data-q="720">720p</button>
+        <button class="chip" data-q="1080">1080p</button>
+      </div>
+
+      <div class="results" id="results"></div>
+
+      <p class="muted" style="font-size:.82rem;line-height:1.6;margin-top:18px">
+        Bağlantı hızını bilmiyorsan önce <a href="/probe/">probe</a> sayfasındaki hız testini çalıştır.
+      </p>
+    </div>
+  </div>
+
+  <div class="bar dim" id="bar">
+    <div class="seek" id="seek">
+      <div class="track"><div class="fill" id="fill"></div><div class="knob" id="knob"></div></div>
+    </div>
+    <div class="controls">
+      <button class="chip" id="playPause">▶</button>
+      <span class="time" id="time">0:00 / 0:00</span>
+      <span class="title" id="title">—</span>
+      <button class="chip" id="qualityBtn">480p</button>
+      <button class="chip" id="audioBtn">Ses: muxed</button>
+      <button class="chip nudge" id="nudgeBack">Ses −0,5s</button>
+      <button class="chip nudge" id="nudgeFwd">Ses +0,5s</button>
+      <button class="chip" id="libBtn">Değiştir</button>
+      <span class="status" id="status">hazır</span>
+    </div>
+  </div>
+</div>
+
+<audio id="fallbackAudio" preload="none"></audio>
+
+<script src="/player/jsmpeg.min.js"></script>
+<script src="/player/player.js"></script>
+</body>
+</html>

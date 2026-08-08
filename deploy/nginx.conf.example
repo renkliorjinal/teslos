@@ -1,0 +1,65 @@
+# teslos — nginx reverse proxy
+#
+# Two things here are load-bearing and easy to get wrong:
+#
+#   1. proxy_buffering off
+#      Without it nginx accumulates the MPEG-TS body before forwarding, which
+#      shows up in the car as several seconds of latency that never drains.
+#
+#   2. The Upgrade/Connection pair on /ws/
+#      The Tesla browser will only open a WebSocket from an HTTPS page, so the
+#      socket must be wss:// and must survive the proxy hop.
+#
+# Replace tesla.example.com with your subdomain, then:
+#   certbot --nginx -d tesla.example.com
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name tesla.example.com;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name tesla.example.com;
+
+    # certbot fills these in.
+    ssl_certificate     /etc/letsencrypt/live/tesla.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/tesla.example.com/privkey.pem;
+
+    # The car's Chromium is a few releases behind; keep the handshake boring.
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+
+    # A long video is one long response. Do not let nginx cut it.
+    proxy_read_timeout  1h;
+    proxy_send_timeout  1h;
+
+    location / {
+        proxy_pass         http://127.0.0.1:8742;
+        proxy_http_version 1.1;
+        proxy_set_header   Host $host;
+        proxy_set_header   X-Real-IP $remote_addr;
+        proxy_set_header   X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+
+        # Streaming endpoints must not be buffered.
+        proxy_buffering    off;
+        proxy_cache        off;
+    }
+
+    location /ws/ {
+        proxy_pass         http://127.0.0.1:8742;
+        proxy_http_version 1.1;
+        proxy_set_header   Upgrade $http_upgrade;
+        proxy_set_header   Connection "upgrade";
+        proxy_set_header   Host $host;
+
+        proxy_buffering    off;
+        proxy_cache        off;
+        proxy_read_timeout 1h;
+        proxy_send_timeout 1h;
+    }
+}

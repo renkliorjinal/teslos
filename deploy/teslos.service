@@ -1,0 +1,37 @@
+# /etc/systemd/system/teslos.service
+#
+#   sudo cp deploy/teslos.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now teslos
+#   journalctl -u teslos -f
+
+[Unit]
+Description=teslos — canvas video bridge for the Tesla browser
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=teslos
+Group=teslos
+WorkingDirectory=/opt/teslos
+ExecStart=/usr/bin/node server/index.js
+Restart=always
+RestartSec=5
+
+# ffmpeg is the whole workload; keep it from starving the droplet.
+Nice=5
+CPUWeight=80
+
+# The service only ever reads its own directory and spawns ffmpeg/yt-dlp.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/teslos/probe-reports
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
