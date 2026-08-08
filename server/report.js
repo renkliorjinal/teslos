@@ -57,9 +57,6 @@ function compare() {
     return;
   }
 
-  const b = JSON.parse(fs.readFileSync(reports[0].full, 'utf8'));
-  const a = JSON.parse(fs.readFileSync(reports[1].full, 'utf8'));
-
   // Tesla only pauses <video> once the car is out of Park, which makes it a
   // reliable label for which report is which.
   const label = (r) => {
@@ -68,6 +65,23 @@ function compare() {
     if (paused === false) return 'PARK';
     return '?';
   };
+
+  // Automatic reporting produces a pile of samples, most of them from whichever
+  // state lasted longest. Comparing the two newest would usually put two Park
+  // samples side by side, so pick the newest of each state instead.
+  const loaded = reports.map((r) => ({ ...r, data: JSON.parse(fs.readFileSync(r.full, 'utf8')) }));
+  let left = loaded.find((r) => label(r.data) === 'PARK');
+  let right = loaded.find((r) => label(r.data) === 'DRIVE');
+
+  if (!left || !right) {
+    // Only one state present: fall back to the two newest so the numbers are
+    // still visible, and let the verdict say what is missing.
+    left = loaded[1];
+    right = loaded[0];
+  }
+
+  const a = left.data;
+  const b = right.data;
 
   const rows = [
     ['canvas fps', (r) => r.live?.canvasFps],
@@ -84,8 +98,8 @@ function compare() {
 
   const show = (v) => (v === undefined || v === null ? '—' : String(v));
 
-  console.log(`\n${BOLD}${reports[1].file}${OFF}  ${DIM}(${label(a)})${OFF}`);
-  console.log(`${BOLD}${reports[0].file}${OFF}  ${DIM}(${label(b)})${OFF}\n`);
+  console.log(`\n${BOLD}${left.file}${OFF}  ${DIM}(${label(a)})${OFF}`);
+  console.log(`${BOLD}${right.file}${OFF}  ${DIM}(${label(b)})${OFF}\n`);
   console.log(`  ${''.padEnd(22)}${label(a).padEnd(16)}${label(b)}`);
   console.log(`  ${'-'.repeat(52)}`);
 

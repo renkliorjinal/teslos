@@ -115,6 +115,10 @@
 
   <div class="panel">
     <button class="btn wide primary" id="btnReport">RAPOR ÜRET VE SUNUCUYA GÖNDER</button>
+    <button class="btn wide" id="btnAuto" style="margin-top:10px">OTOMATİK RAPOR: KAPALI</button>
+    <p class="hint">Sürerken butona basmak zor. Bunu aç, sür, sonra kapat —
+       20 saniyede bir kendisi gönderir. Rapor aracı hangisinin park hangisinin
+       sürüş olduğunu kendi ayırıyor.</p>
     <pre class="mono" id="reportBox" style="display:none;white-space:pre-wrap;max-height:340px;overflow:auto;background:#05050c;padding:10px;border-radius:8px"></pre>
   </div>
 </div>
@@ -624,23 +628,55 @@
   });
 
   // ---------- report ----------
-  $('btnReport').addEventListener('click', function () {
+  function send() {
     report.generatedAt = new Date().toISOString();
-    var text = JSON.stringify(report, null, 2);
-    var box = $('reportBox');
-    box.style.display = 'block';
-    box.textContent = text;
-
-    fetch('/api/probe-report', {
+    return fetch('/api/probe-report', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: text
-    }).then(function (r) {
-      box.textContent = (r.ok ? '// sunucuya kaydedildi\n' : '// gönderilemedi\n') + text;
+      body: JSON.stringify(report)
+    });
+  }
+
+  $('btnReport').addEventListener('click', function () {
+    var box = $('reportBox');
+    box.style.display = 'block';
+    box.textContent = JSON.stringify(report, null, 2);
+
+    send().then(function (r) {
+      box.textContent = (r.ok ? '// sunucuya kaydedildi\n' : '// gönderilemedi\n')
+        + JSON.stringify(report, null, 2);
     }).catch(function (err) {
-      box.textContent = '// gönderilemedi: ' + err.message + '\n' + text;
+      box.textContent = '// gönderilemedi: ' + err.message + '\n' + JSON.stringify(report, null, 2);
     });
   });
+
+  // Pressing a button while driving is not a reasonable thing to ask, and the
+  // measurement that matters can only be taken while the car is moving. Left
+  // running, this captures the whole drive and the report tool sorts out
+  // afterwards which samples were in Park and which were not.
+  (function () {
+    var timer = null;
+    var sent = 0;
+    var button = $('btnAuto');
+
+    button.addEventListener('click', function () {
+      if (timer) {
+        clearInterval(timer);
+        timer = null;
+        button.textContent = 'OTOMATİK RAPOR: KAPALI (' + sent + ' gönderildi)';
+        button.classList.remove('primary');
+        return;
+      }
+      timer = setInterval(function () {
+        send().then(function () {
+          sent++;
+          button.textContent = 'OTOMATİK RAPOR: AÇIK — ' + sent + ' gönderildi';
+        }).catch(function () { /* a dropped sample is not worth interrupting the drive */ });
+      }, 20000);
+      button.classList.add('primary');
+      button.textContent = 'OTOMATİK RAPOR: AÇIK — 0 gönderildi';
+    });
+  })();
 })();
 </script>
 </body>
