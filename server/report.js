@@ -43,6 +43,88 @@ if (arg === 'all') {
   process.exit(0);
 }
 
+if (arg === 'diff') {
+  compare();
+  process.exit(0);
+}
+
+// Park versus Drive is the entire experiment, and the answer is a handful of
+// values changing (or not) between two reports. Reading that off two separate
+// dumps is needless work.
+function compare() {
+  if (reports.length < 2) {
+    console.log('\nNeed two reports to compare. Take one parked and one moving.\n');
+    return;
+  }
+
+  const b = JSON.parse(fs.readFileSync(reports[0].full, 'utf8'));
+  const a = JSON.parse(fs.readFileSync(reports[1].full, 'utf8'));
+
+  // Tesla only pauses <video> once the car is out of Park, which makes it a
+  // reliable label for which report is which.
+  const label = (r) => {
+    const paused = r.live && r.live.videoPaused;
+    if (paused === true) return 'DRIVE';
+    if (paused === false) return 'PARK';
+    return '?';
+  };
+
+  const rows = [
+    ['canvas fps', (r) => r.live?.canvasFps],
+    ['canvas frames', (r) => r.live?.canvasFrames],
+    ['<video> paused', (r) => r.live?.videoPaused],
+    ['<video> drawable', (r) => r.live?.videoDrawable],
+    ['AudioContext', (r) => r.live?.audioContextState],
+    ['<audio> playing', (r) => r.live?.audioElementPlaying],
+    ['link Mbit/s', (r) => r.live?.linkMbps],
+  ];
+
+  const show = (v) => (v === undefined || v === null ? '—' : String(v));
+
+  console.log(`\n${BOLD}${reports[1].file}${OFF}  ${DIM}(${label(a)})${OFF}`);
+  console.log(`${BOLD}${reports[0].file}${OFF}  ${DIM}(${label(b)})${OFF}\n`);
+  console.log(`  ${''.padEnd(22)}${label(a).padEnd(16)}${label(b)}`);
+  console.log(`  ${'-'.repeat(52)}`);
+
+  rows.forEach(([name, get]) => {
+    const va = show(get(a));
+    const vb = show(get(b));
+    const changed = va !== vb;
+    const colour = changed ? YELLOW : DIM;
+    console.log(`  ${name.padEnd(22)}${colour}${va.padEnd(16)}${vb}${OFF}`);
+  });
+
+  console.log(`\n${BOLD}Verdict${OFF}`);
+
+  const driveReport = label(b) === 'DRIVE' ? b : label(a) === 'DRIVE' ? a : null;
+  if (!driveReport) {
+    console.log(`  ${YELLOW}Neither report was taken in Drive — <video> was playing in both.${OFF}`);
+    console.log(`  ${DIM}The lockout only engages once the car leaves Park.${OFF}`);
+    return;
+  }
+
+  const fps = Number(driveReport.live?.canvasFps) || 0;
+  if (fps >= 24) {
+    console.log(`  ${GREEN}Canvas kept painting at ${fps} fps in Drive. The whole approach holds.${OFF}`);
+  } else if (fps > 0) {
+    console.log(`  ${YELLOW}Canvas only managed ${fps} fps in Drive — throttled but alive.${OFF}`);
+  } else {
+    console.log(`  ${RED}Canvas froze in Drive. This transport cannot work.${OFF}`);
+  }
+
+  const ac = driveReport.live?.audioContextState;
+  if (ac === 'running') {
+    console.log(`  ${GREEN}WebAudio survived Drive — keep the muxed audio path.${OFF}`);
+  } else if (ac) {
+    console.log(`  ${YELLOW}AudioContext was "${ac}" in Drive — the player will use the <audio> fallback.${OFF}`);
+  }
+
+  if (driveReport.live?.videoDrawable === false) {
+    console.log(`  ${DIM}<video> stayed unreadable, as expected. Nothing here depends on it.${OFF}`);
+  }
+  console.log('');
+}
+
 const index = Math.max(1, Number(arg) || 1) - 1;
 const chosen = reports[Math.min(index, reports.length - 1)];
 const data = JSON.parse(fs.readFileSync(chosen.full, 'utf8'));
