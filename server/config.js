@@ -7,13 +7,21 @@ const path = require('path');
 // present in the real environment win, which keeps systemd overrides working.
 function loadEnvFile(file) {
   if (!fs.existsSync(file)) return;
+
+  // Parsed into a map first so a repeated key takes its last value. Appending a
+  // corrected line to the bottom of the file is the natural way to fix a
+  // setting, and having the stale one silently win is a miserable way to lose
+  // an afternoon.
+  const parsed = new Map();
+  const repeated = new Set();
+
   for (const rawLine of fs.readFileSync(file, 'utf8').split('\n')) {
     const line = rawLine.trim();
     if (!line || line.startsWith('#')) continue;
     const eq = line.indexOf('=');
     if (eq === -1) continue;
+
     const key = line.slice(0, eq).trim();
-    if (process.env[key] !== undefined) continue;
     let value = line.slice(eq + 1).trim();
     if (
       (value.startsWith('"') && value.endsWith('"')) ||
@@ -21,7 +29,17 @@ function loadEnvFile(file) {
     ) {
       value = value.slice(1, -1);
     }
-    process.env[key] = value;
+    if (parsed.has(key)) repeated.add(key);
+    parsed.set(key, value);
+  }
+
+  for (const key of repeated) {
+    console.warn(`[config] ${key} is set more than once in .env; using the last one`);
+  }
+
+  // A real environment variable still beats the file.
+  for (const [key, value] of parsed) {
+    if (process.env[key] === undefined) process.env[key] = value;
   }
 }
 

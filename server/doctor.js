@@ -60,7 +60,24 @@ if (ytDlpVersion) pass('yt-dlp', ytDlpVersion.trim());
 else fail('yt-dlp', `not runnable as "${config.ytDlp}"`);
 
 if (config.proxy) {
-  pass('proxy', config.maskProxy(config.proxy));
+  // The example in .env.example is a shape, not an address, and pasting it
+  // verbatim reaches yt-dlp as an unparseable URL several steps later.
+  let parsedProxy = null;
+  try {
+    parsedProxy = new URL(config.proxy);
+  } catch {
+    parsedProxy = null;
+  }
+
+  if (!parsedProxy) {
+    fail('proxy', `${config.maskProxy(config.proxy)} is not a valid URL`);
+    console.log('  PROXY_URL still looks like the placeholder. Replace host, port');
+    console.log('  and credentials with your own, e.g. http://user:pass@1.2.3.4:8080');
+  } else if (/^(host|proxy|example\.com)$/i.test(parsedProxy.hostname)) {
+    fail('proxy', `hostname "${parsedProxy.hostname}" is the placeholder, not a real host`);
+  } else {
+    pass('proxy', config.maskProxy(config.proxy));
+  }
   if (config.proxyMedia && !config.proxyUsableByFfmpeg) {
     fail('proxy for media', 'ffmpeg cannot tunnel through a SOCKS proxy');
     console.log('  The resolve will succeed and the media fetch will not, because');
