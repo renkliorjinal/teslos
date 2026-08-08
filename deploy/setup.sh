@@ -15,16 +15,30 @@ DOMAIN="${1:-}"
 EMAIL="${2:-}"
 APP_DIR="/opt/teslos"
 APP_USER="teslos"
+CONF="/etc/default/teslos-setup"
 
 if [[ $EUID -ne 0 ]]; then
   echo "Run with sudo: sudo bash deploy/setup.sh <domain> <email>" >&2
   exit 1
 fi
 
+# Re-runs are the normal case — a firewall or DNS fix between attempts — and
+# retyping the arguments on a phone keyboard is its own small punishment.
+if [[ -z "$DOMAIN" || -z "$EMAIL" ]] && [[ -f "$CONF" ]]; then
+  # shellcheck disable=SC1090
+  source "$CONF"
+  DOMAIN="${DOMAIN:-${TESLOS_DOMAIN:-}}"
+  EMAIL="${EMAIL:-${TESLOS_EMAIL:-}}"
+  echo "Reusing saved settings: $DOMAIN <$EMAIL>"
+fi
+
 if [[ -z "$DOMAIN" || -z "$EMAIL" ]]; then
   echo "Usage: sudo bash deploy/setup.sh tesla.example.com you@example.com" >&2
+  echo "(after the first run both are remembered, so no arguments are needed)" >&2
   exit 1
 fi
+
+printf 'TESLOS_DOMAIN=%s\nTESLOS_EMAIL=%s\n' "$DOMAIN" "$EMAIL" > "$CONF"
 
 if ! command -v apt-get >/dev/null 2>&1; then
   echo "This script targets Debian/Ubuntu. Follow the README manually instead." >&2
