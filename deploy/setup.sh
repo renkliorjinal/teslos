@@ -134,6 +134,15 @@ rm -f /etc/nginx/sites-enabled/default
 nginx -t
 systemctl reload nginx
 
+# DigitalOcean's 1-Click images ship with UFW closed to everything but SSH.
+# Certbot proves control of the name over port 80, so a closed firewall looks
+# exactly like a DNS mistake in the error output.
+if command -v ufw >/dev/null 2>&1 && ufw status | grep -q '^Status: active'; then
+  step "Opening ports 80 and 443"
+  ufw allow 80/tcp
+  ufw allow 443/tcp
+fi
+
 # ---------------------------------------------------------------- service
 step "Installing systemd service"
 # Pin ExecStart to whichever node this box actually has, rather than trusting
@@ -152,6 +161,25 @@ systemctl is-active --quiet teslos && echo "teslos is running" || {
 
 # ---------------------------------------------------------------- tls
 step "Requesting a certificate for $DOMAIN"
+
+# Check the name actually points here first. Certbot's failure for a
+# misdirected record is a 404 on the challenge URL, which reads like a server
+# bug rather than a DNS one and sends people looking in the wrong place.
+PUBLIC_IP="$(curl -fsS --max-time 10 https://api.ipify.org || true)"
+RESOLVED="$(getent ahostsv4 "$DOMAIN" | awk 'NR==1 {print $1}' || true)"
+if [[ -n "$PUBLIC_IP" && -n "$RESOLVED" && "$PUBLIC_IP" != "$RESOLVED" ]]; then
+  cat >&2 <<MISMATCH
+
+  $DOMAIN resolves to $RESOLVED, but this droplet is $PUBLIC_IP.
+
+  Point the A record at $PUBLIC_IP and re-run this script. If you created the
+  subdomain through a hosting control panel, it most likely aimed the record at
+  the hosting server by default.
+
+MISMATCH
+  exit 1
+fi
+
 if [[ -d "/etc/letsencrypt/live/$DOMAIN" ]]; then
   echo "Certificate already present, skipping."
 else
