@@ -57,12 +57,15 @@ function compare() {
     return;
   }
 
-  // Tesla only pauses <video> once the car is out of Park, which makes it a
-  // reliable label for which report is which.
+  // GPS speed decides, not <video> pausing. Inferring motion from the lockout
+  // is circular — the lockout is the thing being measured — and if it has been
+  // removed the inference labels every sample Park and hides the result.
   const label = (r) => {
+    const speed = r.live && r.live.speedKmh;
+    if (typeof speed === 'number') return speed > 5 ? 'DRIVE' : 'PARK';
     const paused = r.live && r.live.videoPaused;
     if (paused === true) return 'DRIVE';
-    if (paused === false) return 'PARK';
+    if (paused === false) return 'PARK?';
     return '?';
   };
 
@@ -84,6 +87,8 @@ function compare() {
   const b = right.data;
 
   const rows = [
+    ['speed km/h', (r) => r.live?.speedKmh],
+    ['max speed km/h', (r) => r.live?.maxSpeedKmh],
     ['canvas fps', (r) => r.live?.canvasFps],
     ['canvas frames', (r) => r.live?.canvasFrames],
     ['WebCodecs fps', (r) => r.live?.webcodecsFps],
@@ -117,9 +122,25 @@ function compare() {
 
   const driveReport = label(b) === 'DRIVE' ? b : label(a) === 'DRIVE' ? a : null;
   if (!driveReport) {
-    console.log(`  ${YELLOW}Neither report was taken in Drive — <video> was playing in both.${OFF}`);
-    console.log(`  ${DIM}The lockout only engages once the car leaves Park.${OFF}`);
+    const anySpeed = [a, b].some((r) => typeof r.live?.speedKmh === 'number');
+    if (anySpeed) {
+      console.log(`  ${YELLOW}No sample was taken above 5 km/h — both were stationary.${OFF}`);
+    } else {
+      console.log(`  ${YELLOW}No speed in either sample, so motion cannot be confirmed.${OFF}`);
+      console.log(`  ${DIM}Allow the location prompt on the probe page; without it the${OFF}`);
+      console.log(`  ${DIM}only remaining hint is <video> pausing, which is what we are testing.${OFF}`);
+    }
     return;
+  }
+
+  // The headline result. If the car was genuinely moving and <video> never
+  // paused, the restriction this whole project routes around is not present on
+  // this firmware — which would make the workaround unnecessary rather than
+  // merely improvable.
+  if (driveReport.live?.videoPaused === false) {
+    console.log(`  ${GREEN}At ${driveReport.live.speedKmh} km/h <video> was still playing.${OFF}`);
+    console.log(`  ${GREEN}The Drive lockout appears to be gone on this firmware.${OFF}`);
+    console.log(`  ${DIM}Worth testing plain video playback before keeping any of the workaround.${OFF}`);
   }
 
   const fps = Number(driveReport.live?.canvasFps) || 0;
@@ -207,6 +228,9 @@ console.log(`\n${BOLD}Worth knowing${OFF}`);
 });
 
 console.log(`\n${BOLD}Live measurements${OFF}`);
+line('Speed at report time', typeof live.speedKmh === 'number'
+  ? `${live.speedKmh} km/h  ${DIM}(max ${live.maxSpeedKmh ?? '?'}, ${live.speedSource || '?'})${OFF}`
+  : `${YELLOW}${live.geolocation || 'not measured'}${OFF}`);
 line('Canvas frames / fps', `${live.canvasFrames ?? '?'} @ ${live.canvasFps ?? '?'} fps`);
 line('<video> paused', live.videoPaused === undefined ? '?' : String(live.videoPaused));
 line('<video> drawable', live.videoDrawable === undefined ? '?' : String(live.videoDrawable));

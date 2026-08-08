@@ -58,6 +58,17 @@
          <code>drawImage</code> siyah verir. Kilidin kendisi budur.</p>
     </div>
 
+    <div class="panel" style="border-color:#00779e">
+      <h2>Canlı · Hız (GPS)</h2>
+      <div class="big" id="spdNow">—</div>
+      <div class="kv"><span class="k">Bu oturumda en yüksek</span><span class="v" id="spdMax">—</span></div>
+      <div class="kv"><span class="k">Durum</span><span class="v" id="spdState">izin bekleniyor…</span></div>
+      <div class="verdict" id="spdVerdict">Sürüş örneği ancak burada hız görünürse geçerli</div>
+      <p class="hint">Sürüş durumunu <code>&lt;video&gt;</code>'nun duraklamasından çıkarmak
+         döngüsel olurdu — ölçmek istediğimiz şey tam olarak o. Hız bağımsız
+         tanık. Tarayıcı konum izni isterse <b>izin ver</b>.</p>
+    </div>
+
     <div class="panel">
       <h2>Canlı · WebCodecs</h2>
       <canvas id="wcCanvas" width="320" height="180"></canvas>
@@ -226,6 +237,7 @@
     Fullscreen: !!(document.fullscreenEnabled || document.webkitFullscreenEnabled),
     ServiceWorker: 'serviceWorker' in navigator,
     WakeLock: 'wakeLock' in navigator,
+    Geolocation: 'geolocation' in navigator,
     Gamepad: typeof navigator.getGamepads === 'function',
     SharedArrayBuffer: typeof SharedArrayBuffer !== 'undefined',
     crossOriginIsolated: !!self.crossOriginIsolated
@@ -347,6 +359,73 @@
       report.live.videoCurrentTime = Number(vid.currentTime.toFixed(2));
       report.live.videoDrawable = drawable;
     }, 500);
+  })();
+
+  // ---------- live speed ----------
+  //
+  // Whether a sample was taken while moving cannot be inferred from <video>
+  // pausing: that is the very thing under test, and if the lockout has been
+  // removed the inference silently reports every sample as Park. GPS is an
+  // independent witness.
+  (function () {
+    var maxKmh = 0;
+    var previous = null;
+
+    function paint(kmh, source) {
+      $('spdNow').textContent = kmh.toFixed(0) + ' km/s';
+      if (kmh > maxKmh) maxKmh = kmh;
+      $('spdMax').textContent = maxKmh.toFixed(0) + ' km/s';
+      report.live.speedKmh = Number(kmh.toFixed(1));
+      report.live.maxSpeedKmh = Number(maxKmh.toFixed(1));
+      report.live.speedSource = source;
+
+      var moving = kmh > 5;
+      $('spdVerdict').textContent = moving
+        ? 'Hareket halinde — bu örnek sürüş sayılır'
+        : 'Duruyor — bu örnek park sayılır';
+      $('spdVerdict').className = 'verdict ' + (moving ? 'ok' : '');
+    }
+
+    function fail(text, code) {
+      $('spdState').textContent = text;
+      $('spdState').className = 'v fail';
+      report.live.geolocation = code;
+    }
+
+    if (!navigator.geolocation) {
+      fail('Geolocation yok', 'unsupported');
+      return;
+    }
+
+    navigator.geolocation.watchPosition(function (position) {
+      $('spdState').textContent = 'izin verildi';
+      $('spdState').className = 'v ok';
+      report.live.geolocation = 'ok';
+
+      var coords = position.coords;
+      if (typeof coords.speed === 'number' && !isNaN(coords.speed)) {
+        paint(coords.speed * 3.6, 'gps');
+      } else if (previous) {
+        // Some platforms leave speed null, so derive it from the fix positions.
+        var dt = (position.timestamp - previous.timestamp) / 1000;
+        if (dt > 0.3) paint((haversine(previous.coords, coords) / dt) * 3.6, 'derived');
+      }
+      previous = position;
+    }, function (err) {
+      fail(err.code === err.PERMISSION_DENIED ? 'izin reddedildi' : 'hata: ' + err.message,
+        err.code === err.PERMISSION_DENIED ? 'denied' : 'error');
+    }, { enableHighAccuracy: true, maximumAge: 2000, timeout: 20000 });
+
+    function haversine(a, b) {
+      var R = 6371000;
+      var toRad = function (d) { return (d * Math.PI) / 180; };
+      var dLat = toRad(b.latitude - a.latitude);
+      var dLon = toRad(b.longitude - a.longitude);
+      var s = Math.sin(dLat / 2) * Math.sin(dLat / 2)
+        + Math.cos(toRad(a.latitude)) * Math.cos(toRad(b.latitude))
+        * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+      return R * 2 * Math.atan2(Math.sqrt(s), Math.sqrt(1 - s));
+    }
   })();
 
   // ---------- live WebCodecs decode ----------
