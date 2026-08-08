@@ -91,6 +91,21 @@
     el.toast.textContent = message;
     el.toast.style.display = 'block';
     clearTimeout(toast.timer);
+
+    // When YouTube has refused the server, the car itself is not blocked — it
+    // reaches YouTube from a mobile address rather than a datacenter one, and
+    // current firmware no longer stops <video> from playing. Offer that route
+    // instead of leaving a dead end, and leave it up rather than timing out.
+    if (/bot|cookie|çerez/i.test(message)) {
+      var link = document.createElement('a');
+      link.href = 'https://www.youtube.com/watch?v=' + encodeURIComponent(state.videoId || '');
+      link.textContent = 'YouTube\'u doğrudan aç →';
+      link.style.cssText = 'display:block;margin-top:10px;color:#7fd6ff;font-weight:600';
+      el.toast.appendChild(document.createElement('br'));
+      el.toast.appendChild(link);
+      return;
+    }
+
     toast.timer = setTimeout(function () { el.toast.style.display = 'none'; }, 6000);
   }
 
