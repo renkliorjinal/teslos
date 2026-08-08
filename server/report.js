@@ -62,7 +62,9 @@ function line(label, value) {
 console.log(`\n${BOLD}${chosen.file}${OFF}  ${DIM}${data.generatedAt || ''}${OFF}\n`);
 
 console.log(`${BOLD}Browser${OFF}`);
-line('Tesla browser', sys.teslaDetected ? `${GREEN}yes${OFF}` : `${YELLOW}no — measured elsewhere${OFF}`);
+line('Tesla browser', sys.teslaDetected
+  ? `${GREEN}yes${OFF} ${DIM}(via ${sys.teslaDetectedVia || 'user-agent'})${OFF}`
+  : `${YELLOW}no — measured elsewhere${OFF}`);
 line('Chromium', sys.chromium || '?');
 line('QtWebEngine', sys.qtWebEngine || 'not reported');
 line('Viewport', `${sys.viewport || '?'}  (screen ${sys.screen || '?'})`);
@@ -121,6 +123,18 @@ if (!acState || acState === 'not tested') {
   console.log(`  ${GREEN}WebAudio runs, so keep the muxed audio path (audio stays in sync).${OFF}`);
 } else {
   console.log(`  ${YELLOW}AudioContext was "${acState}" — the player will fall back to a separate <audio> stream.${OFF}`);
+}
+
+// MPEG1 exists in this design only because it was the one codec decodable in
+// plain JavaScript on the firmware the approach was built against. A browser
+// new enough to expose WebCodecs can decode H.264 directly, which is worth
+// far more than any tuning of the current pipeline.
+if (apis['WebCodecs VideoDecoder']) {
+  console.log(`  ${GREEN}WebCodecs is available — H.264 would beat MPEG1 badly at the same bitrate.${OFF}`);
+  console.log(`  ${DIM}Worth rebuilding the transport around it.${OFF}`);
+}
+if (apis.RTCPeerConnection) {
+  console.log(`  ${GREEN}WebRTC is available — a much simpler transport than MPEG1-over-WebSocket.${OFF}`);
 }
 
 const mbps = Number(live.linkMbps) || 0;

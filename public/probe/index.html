@@ -123,16 +123,46 @@
     container.appendChild(d);
   }
 
+  // ---------- WebGL (needed early: it is how the car is recognised) ----------
+  function readWebgl() {
+    var gl = null;
+    try { gl = document.createElement('canvas').getContext('webgl'); } catch (e) { return null; }
+    if (!gl) return null;
+    var dbg = gl.getExtension('WEBGL_debug_renderer_info');
+    return {
+      vendor: dbg ? gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL) : gl.getParameter(gl.VENDOR),
+      renderer: dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER),
+      version: gl.getParameter(gl.VERSION),
+      maxTextureSize: gl.getParameter(gl.MAX_TEXTURE_SIZE)
+    };
+  }
+  var webglInfo = readWebgl();
+
   // ---------- system ----------
   var ua = navigator.userAgent;
-  var isTesla = /QtCarBrowser|Tesla/i.test(ua);
-  $('headline').textContent = isTesla
-    ? 'Tesla tarayıcısı algılandı'
+
+  // Recent firmware dropped every hint from the user agent — it now reports a
+  // plain desktop Linux Chrome string with no Tesla or QtWebEngine token — so
+  // fall back to the hardware signature: a touch-capable Linux machine with
+  // MCU3's AMD Raven APU behind the car's 1920x1200 panel.
+  function detectTesla() {
+    if (/QtCarBrowser|Tesla/i.test(ua)) return 'user-agent';
+    var linuxTouch = /Linux/i.test(navigator.platform || ua) && (navigator.maxTouchPoints || 0) > 0;
+    var amdRaven = /raven|Radeon Vega/i.test((webglInfo && webglInfo.renderer) || '');
+    var carPanel = screen.width === 1920 && screen.height === 1200;
+    if (linuxTouch && (amdRaven || carPanel)) return 'hardware signature';
+    return false;
+  }
+  var teslaVia = detectTesla();
+
+  $('headline').textContent = teslaVia
+    ? 'Tesla algılandı (' + teslaVia + ')'
     : 'Standart tarayıcı (referans ölçüm — asıl sonuç arabada alınmalı)';
 
   var sys = {
     userAgent: ua,
-    teslaDetected: isTesla,
+    teslaDetected: Boolean(teslaVia),
+    teslaDetectedVia: teslaVia || 'none',
     chromium: (ua.match(/Chrome\/([\d.]+)/) || [])[1] || 'bilinmiyor',
     qtWebEngine: (ua.match(/QtWebEngine\/([\d.]+)/) || [])[1] || 'yok',
     platform: navigator.platform || '?',
@@ -216,21 +246,13 @@
   }
   report.codecs = codecs;
 
-  // ---------- WebGL detail ----------
-  (function () {
-    var gl = null;
-    try { gl = document.createElement('canvas').getContext('webgl'); } catch (e) { /* unsupported */ }
-    if (!gl) { row($('webgl'), 'WebGL', 'yok', 'fail'); report.webgl = null; return; }
-    var dbg = gl.getExtension('WEBGL_debug_renderer_info');
-    var info = {
-      vendor: dbg ? gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL) : gl.getParameter(gl.VENDOR),
-      renderer: dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER),
-      version: gl.getParameter(gl.VERSION),
-      maxTextureSize: gl.getParameter(gl.MAX_TEXTURE_SIZE)
-    };
-    report.webgl = info;
-    Object.keys(info).forEach(function (k) { row($('webgl'), k, String(info[k])); });
-  })();
+  // ---------- WebGL detail (read above, rendered here) ----------
+  report.webgl = webglInfo;
+  if (!webglInfo) {
+    row($('webgl'), 'WebGL', 'yok', 'fail');
+  } else {
+    Object.keys(webglInfo).forEach(function (k) { row($('webgl'), k, String(webglInfo[k])); });
+  }
 
   // ---------- live canvas ----------
   (function () {
