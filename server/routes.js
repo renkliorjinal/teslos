@@ -23,6 +23,8 @@ router.get('/health', (req, res) => {
     qualities: Object.keys(config.QUALITY).map(Number),
     ytClient: youtube.activeClient(),
     cookies: Boolean(config.cookies),
+    proxy: config.maskProxy(config.proxy) || null,
+    proxyMedia: config.proxyMedia && config.proxyUsableByFfmpeg,
   });
 });
 

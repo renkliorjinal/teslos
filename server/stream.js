@@ -28,6 +28,11 @@ function inputArgs(url, startTime) {
       '-reconnect_on_network_error', '1',
       '-reconnect_delay_max', '10',
     );
+    // YouTube binds a media URL to the address that resolved it, so the fetch
+    // has to leave by the same door or the CDN answers 403.
+    if (config.proxyMedia && config.proxyUsableByFfmpeg) {
+      args.push('-http_proxy', config.proxy);
+    }
   }
   // Input-side seek: ffmpeg issues a ranged request instead of decoding and
   // discarding everything before startTime.

@@ -38,12 +38,32 @@ const QUALITY = {
 
 const DEFAULT_QUALITY = QUALITY[process.env.DEFAULT_QUALITY] ? Number(process.env.DEFAULT_QUALITY) : 480;
 
+const proxy = (process.env.PROXY_URL || '').trim();
+
+// ffmpeg can only tunnel through an HTTP proxy; its http protocol has no SOCKS
+// support. yt-dlp handles both, so the two ends of the pipeline can disagree
+// about whether a given proxy is usable.
+const proxyUsableByFfmpeg = /^https?:\/\//i.test(proxy);
+
+// Credentials in a proxy URL must never reach a log line or an API response.
+function maskProxy(url) {
+  if (!url) return '';
+  return url.replace(/\/\/[^@/]*@/, '//***@');
+}
+
 module.exports = {
   port: Number(process.env.PORT) || 8742,
   bind: process.env.BIND || '127.0.0.1',
   ytDlp: process.env.YT_DLP || 'yt-dlp',
   ffmpeg: process.env.FFMPEG || 'ffmpeg',
   cookies: process.env.YT_DLP_COOKIES || '',
+  proxy,
+  proxyUsableByFfmpeg,
+  // YouTube ties a media URL to the address that asked for it, so by default
+  // the media fetch takes the same route the resolve did. Opting out is for
+  // metered proxies, and risks 403s on playback.
+  proxyMedia: Boolean(proxy) && process.env.PROXY_MEDIA !== '0',
+  maskProxy,
   maxSessions: Number(process.env.MAX_SESSIONS) || 2,
   publicDir: path.join(__dirname, '..', 'public'),
   reportsDir: path.join(__dirname, '..', 'probe-reports'),

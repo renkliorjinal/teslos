@@ -142,12 +142,32 @@ sudo systemctl daemon-reload && sudo systemctl enable --now teslos
 journalctl -u teslos -f
 ```
 
-### YouTube cookies
+### Getting past YouTube's bot check
 
-YouTube frequently challenges datacenter IPs with *"Sign in to confirm you're
-not a bot"*. If `npm run doctor` reports that, export cookies from a logged-in
-browser in Netscape format and point `YT_DLP_COOKIES` at the file. Treat that
-file as a credential: it is an active session for the account it came from.
+YouTube answers datacenter addresses with *"Sign in to confirm you're not a
+bot"*, which kills every request the server makes. Three ways out, cheapest
+first:
+
+1. **Other player clients.** Tried automatically — `tv_simply`, `android_vr`,
+   `ios` and `android` need neither authentication nor the JS player, so they
+   sidestep the proof-of-origin check. `npm run doctor` names the one that
+   worked. Costs nothing, but on a thoroughly flagged address none of them get
+   through.
+
+2. **A proxy.** Set `PROXY_URL` to a residential or mobile exit. Both the
+   resolve and the media fetch go through it, because YouTube binds each media
+   URL to the address that asked for it — split them and the CDN answers 403.
+   ffmpeg can only tunnel through an HTTP proxy, so `socks5://` needs a local
+   bridge; `npm run doctor` says so plainly rather than letting playback fail
+   later.
+
+3. **Cookies.** Export them from a logged-in browser in Netscape format and
+   point `YT_DLP_COOKIES` at the file. Treat it as a credential — it is an
+   active session for that account. `chmod 600`, and note it is already in
+   `.gitignore`.
+
+None of this applies to the car itself, which reaches YouTube from a mobile
+address and is not challenged.
 
 ---
 

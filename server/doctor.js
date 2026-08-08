@@ -59,6 +59,22 @@ const ytDlpVersion = tryExec(config.ytDlp, ['--version']);
 if (ytDlpVersion) pass('yt-dlp', ytDlpVersion.trim());
 else fail('yt-dlp', `not runnable as "${config.ytDlp}"`);
 
+if (config.proxy) {
+  pass('proxy', config.maskProxy(config.proxy));
+  if (config.proxyMedia && !config.proxyUsableByFfmpeg) {
+    fail('proxy for media', 'ffmpeg cannot tunnel through a SOCKS proxy');
+    console.log('  The resolve will succeed and the media fetch will not, because');
+    console.log('  YouTube binds each media URL to the address that asked for it.');
+    console.log('  Run a local HTTP-to-SOCKS bridge and point PROXY_URL at that.');
+  } else if (config.proxyMedia) {
+    pass('proxy for media', 'ffmpeg tunnels through it too');
+  } else {
+    console.log('  note  PROXY_MEDIA=0 — media is fetched directly, expect CDN 403s');
+  }
+} else {
+  console.log('  note  no PROXY_URL set — YouTube sees this datacenter address');
+}
+
 if (config.cookies) {
   const fs = require('fs');
   if (fs.existsSync(config.cookies)) pass('cookie jar', config.cookies);

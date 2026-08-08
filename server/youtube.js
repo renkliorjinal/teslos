@@ -44,6 +44,9 @@ function watchUrl(videoId) {
 function baseArgs() {
   const args = ['--no-warnings', '--no-playlist'];
   if (config.cookies) args.push('--cookies', config.cookies);
+  // A residential or mobile exit sidesteps the bot check that a datacenter
+  // address walks straight into.
+  if (config.proxy) args.push('--proxy', config.proxy);
   return args;
 }
 
