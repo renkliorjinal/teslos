@@ -78,8 +78,20 @@ is not what this repo does.)
 
 ## Install
 
+On a fresh Debian/Ubuntu droplet, point the hostname's DNS A record at it and
+then:
+
 ```bash
 git clone https://github.com/renkliorjinal/teslos.git /opt/teslos
+sudo bash /opt/teslos/deploy/setup.sh tesla.example.com you@example.com
+```
+
+That installs the dependencies, the nginx site, a Let's Encrypt certificate and
+the systemd service, then runs the pre-flight check. It is safe to re-run.
+
+Manually, if you would rather do it a piece at a time:
+
+```bash
 cd /opt/teslos
 npm install
 cp .env.example .env      # then edit

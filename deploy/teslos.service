@@ -19,6 +19,11 @@ ExecStart=/usr/bin/node server/index.js
 Restart=always
 RestartSec=5
 
+# The service account has no home directory, and yt-dlp wants somewhere to put
+# its cache. PrivateTmp below gives it a private /tmp to use.
+Environment=HOME=/tmp
+Environment=XDG_CACHE_HOME=/tmp
+
 # ffmpeg is the whole workload; keep it from starving the droplet.
 Nice=5
 CPUWeight=80
