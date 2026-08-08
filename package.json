@@ -7,7 +7,8 @@
   "scripts": {
     "start": "node server/index.js",
     "dev": "node --watch server/index.js",
-    "doctor": "node server/doctor.js"
+    "doctor": "node server/doctor.js",
+    "report": "node server/report.js"
   },
   "engines": {
     "node": ">=18"
