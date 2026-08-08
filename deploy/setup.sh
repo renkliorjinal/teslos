@@ -155,7 +155,12 @@ step "Requesting a certificate for $DOMAIN"
 if [[ -d "/etc/letsencrypt/live/$DOMAIN" ]]; then
   echo "Certificate already present, skipping."
 else
-  certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos -m "$EMAIL" --redirect
+  # --cert-name pins this request to its own lineage. Without it, certbot can
+  # decide to fold the request into an unrelated certificate that already
+  # exists on the box (a droplet reused from another project often has one
+  # named after its IP) and then refuse over a key-type mismatch.
+  certbot --nginx -d "$DOMAIN" --cert-name "$DOMAIN" \
+    --non-interactive --agree-tos -m "$EMAIL" --redirect
 fi
 
 # ---------------------------------------------------------------- verify
