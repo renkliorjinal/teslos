@@ -118,12 +118,22 @@ async function getMetadata(videoId) {
 //
 // av01 is excluded because software AV1 decode on a small droplet cannot keep
 // up with realtime transcoding.
-async function resolveStreams(videoId, height) {
-  const format = [
-    `bestvideo[height<=${height}][vcodec!*=av01]+bestaudio`,
-    `best[height<=${height}]`,
-    'best',
-  ].join('/');
+async function resolveStreams(videoId, height, { preferAvc = false } = {}) {
+  // Remuxing into MP4 without re-encoding only works if the tracks are already
+  // H.264 and AAC, so the direct path asks for those specifically. The canvas
+  // path re-encodes anyway and can take whatever is best.
+  const format = preferAvc
+    ? [
+      `bestvideo[height<=${height}][vcodec^=avc1]+bestaudio[acodec^=mp4a]`,
+      `best[height<=${height}][ext=mp4]`,
+      `best[height<=${height}]`,
+      'best',
+    ].join('/')
+    : [
+      `bestvideo[height<=${height}][vcodec!*=av01]+bestaudio`,
+      `best[height<=${height}]`,
+      'best',
+    ].join('/');
 
   const out = await runYtDlp([...baseArgs(), '-f', format, '-g', watchUrl(videoId)]);
   const urls = out.trim().split('\n').map((s) => s.trim()).filter((s) => s.startsWith('http'));

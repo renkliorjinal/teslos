@@ -1,23 +1,26 @@
 'use strict';
 
 /**
- * Tesla-side player.
+ * Tesla-side player, with two transports.
  *
- * The car's browser pauses <video> elements at the OS level once the car
- * leaves Park, and a paused element also poisons drawImage(), so no pixels can
- * be laundered through one. This player therefore never creates a <video> at
- * all: the server sends MPEG1 in an MPEG-TS over a WebSocket, JSMpeg decodes it
- * in JavaScript, and the frames are painted into a <canvas> via WebGL.
+ * direct — an ordinary <video> fed a remuxed MP4. The server copies YouTube's
+ *   existing H.264 into a container without re-encoding, so the car decodes in
+ *   hardware at full quality and the server does almost no work.
  *
- * Audio has two paths:
- *   muxed    - MP2 inside the same transport stream, decoded by JSMpeg and sent
- *              to WebAudio. Shares a clock with the video, so it stays in sync.
- *   separate - a plain MP3 body driving an <audio> element. Known to survive
- *              Drive mode on every firmware, but drifts against the video.
- * Muxed is preferred and falls back automatically when WebAudio stays silent.
+ * canvas — MPEG1 in an MPEG-TS over a WebSocket, decoded by JSMpeg in
+ *   JavaScript and painted into a <canvas>. Uglier, heavier at both ends, and
+ *   originally the only option: firmware used to pause <video> elements at the
+ *   OS level once the car left Park, and a paused element also poisons
+ *   drawImage(), so pixels had to reach the page without touching one.
  *
- * Seeking is a server-side operation: there is no buffer to scrub, so a seek
- * tears the socket down and reopens it with a new ?t= offset.
+ * Measured at 104 km/h on Chromium 140 firmware, <video> keeps playing, so
+ * direct is the default. The canvas path stays because that lockout may still
+ * exist on older firmware, and the player falls back to it on its own if the
+ * video element never starts advancing.
+ *
+ * Seeking is a server-side operation on both paths: a piped fragmented MP4
+ * carries no index and a live socket has no buffer to scrub, so a seek past
+ * what is already buffered reopens the stream at a new ?t= offset.
  */
 
 (function () {
@@ -25,6 +28,7 @@
 
   var el = {
     canvas: $('screen'),
+    video: $('direct'),
     overlay: $('overlay'),
     query: $('q'),
     go: $('go'),
@@ -37,6 +41,7 @@
     time: $('time'),
     title: $('title'),
     qualityBtn: $('qualityBtn'),
+    transportBtn: $('transportBtn'),
     audioBtn: $('audioBtn'),
     libBtn: $('libBtn'),
     nudgeBack: $('nudgeBack'),
@@ -52,16 +57,18 @@
     videoId: null,
     meta: null,
     quality: 480,
+    transport: 'direct',
     audioMode: 'muxed',
-    audioNudge: 0,       // seconds added to the fallback audio request
-    player: null,
+    audioNudge: 0,
+    player: null,          // JSMpeg instance, canvas transport only
     playing: false,
-    startOffset: 0,      // absolute position the current socket started at
+    startOffset: 0,        // absolute position the current stream started at
     streamStartedAt: 0,
     scrubbing: false,
     scrubPosition: 0,
     watchdog: null,
-    resumeTimer: null
+    resumeTimer: null,
+    directWatchdog: null
   };
 
   // ---------------------------------------------------------------- helpers
@@ -87,20 +94,28 @@
     toast.timer = setTimeout(function () { el.toast.style.display = 'none'; }, 6000);
   }
 
+  function isDirect() {
+    return state.transport === 'direct';
+  }
+
   function currentPosition() {
     if (state.scrubbing) return state.scrubPosition;
-    if (!state.player || !state.playing) return state.startOffset;
+    if (!state.playing) return state.startOffset;
 
     var elapsed = 0;
-    try {
-      elapsed = state.player.currentTime || 0;
-    } catch (e) {
-      elapsed = 0;
-    }
-    // Before the first frame decodes, currentTime sits at 0; wall clock keeps
-    // the seek bar honest because the server paces the stream at 1x.
-    if (!isFinite(elapsed) || elapsed <= 0) {
-      elapsed = (performance.now() - state.streamStartedAt) / 1000;
+    if (isDirect()) {
+      elapsed = el.video.currentTime || 0;
+    } else {
+      try {
+        elapsed = state.player ? state.player.currentTime || 0 : 0;
+      } catch (e) {
+        elapsed = 0;
+      }
+      // Before the first frame decodes currentTime sits at 0; wall clock keeps
+      // the seek bar honest because the server paces that stream at 1x.
+      if (!isFinite(elapsed) || elapsed <= 0) {
+        elapsed = (performance.now() - state.streamStartedAt) / 1000;
+      }
     }
     return state.startOffset + elapsed;
   }
@@ -179,8 +194,10 @@
   function teardown() {
     clearTimeout(state.watchdog);
     clearTimeout(state.resumeTimer);
+    clearTimeout(state.directWatchdog);
     state.watchdog = null;
     state.resumeTimer = null;
+    state.directWatchdog = null;
 
     if (state.player) {
       try {
@@ -190,6 +207,11 @@
       }
       state.player = null;
     }
+
+    el.video.pause();
+    el.video.removeAttribute('src');
+    el.video.load();
+
     el.audio.pause();
     el.audio.removeAttribute('src');
     el.audio.load();
@@ -203,6 +225,38 @@
     state.playing = true;
     el.playPause.textContent = '❚❚';
     setStatus('bağlanılıyor…');
+
+    if (isDirect()) startDirect();
+    else startCanvas();
+  }
+
+  function startDirect() {
+    el.canvas.classList.add('off');
+    el.video.classList.remove('off');
+
+    el.video.src = '/api/stream?v=' + encodeURIComponent(state.videoId)
+      + '&q=' + state.quality
+      + '&t=' + Math.floor(state.startOffset);
+    el.video.play().catch(function (err) {
+      toast('Oynatma reddedildi: ' + err.name);
+      setStatus('durdu');
+    });
+
+    // If the car does still pause <video> — older firmware than the one this
+    // was measured on — nothing ever advances and the screen simply sits
+    // there. Rather than leave the driver guessing, take the hint and move to
+    // the transport that was built for exactly that case.
+    state.directWatchdog = setTimeout(function () {
+      if (!state.playing || !isDirect()) return;
+      if (el.video.currentTime > 0.3) return;
+      toast('Doğrudan oynatma başlamadı — canvas yoluna geçiliyor');
+      setTransport('canvas', true);
+    }, 12000);
+  }
+
+  function startCanvas() {
+    el.video.classList.add('off');
+    el.canvas.classList.remove('off');
 
     var muxedAudio = state.audioMode === 'muxed';
     var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -304,8 +358,7 @@
     state.watchdog = setTimeout(function () {
       var out = state.player && state.player.audioOut;
       var ctx = out && out.context;
-      var running = ctx && ctx.state === 'running';
-      if (running) return;
+      if (ctx && ctx.state === 'running') return;
 
       // WebAudio is suppressed on this firmware/drive state. The <audio>
       // element path is the documented survivor, so move over to it.
@@ -314,11 +367,14 @@
     }, 4000);
   }
 
-  function startFallbackAudio() {
-    var offset = Math.max(0, state.startOffset + state.audioNudge);
-    el.audio.src = '/api/audio?v=' + encodeURIComponent(state.videoId)
-      + '&t=' + offset.toFixed(2)
+  function fallbackAudioUrl(offset) {
+    return '/api/audio?v=' + encodeURIComponent(state.videoId)
+      + '&t=' + Math.max(0, offset).toFixed(2)
       + '&_=' + Date.now();
+  }
+
+  function startFallbackAudio() {
+    el.audio.src = fallbackAudioUrl(state.startOffset + state.audioNudge);
     el.audio.play().catch(function (err) {
       toast('Ses başlatılamadı: ' + err.name);
     });
@@ -332,32 +388,55 @@
   }
 
   function nudgeAudio(delta) {
-    if (state.audioMode !== 'separate') return;
+    if (state.audioMode !== 'separate' || isDirect()) return;
     state.audioNudge += delta;
     setStatus('ses kaydırma: ' + state.audioNudge.toFixed(1) + ' sn');
     // Only the audio stream restarts; the video keeps rolling untouched.
     var elapsed = (performance.now() - state.streamStartedAt) / 1000;
-    var offset = Math.max(0, state.startOffset + elapsed + state.audioNudge);
-    el.audio.src = '/api/audio?v=' + encodeURIComponent(state.videoId)
-      + '&t=' + offset.toFixed(2)
-      + '&_=' + Date.now();
+    el.audio.src = fallbackAudioUrl(state.startOffset + elapsed + state.audioNudge);
     el.audio.play().catch(function () { /* the toast above already covers this */ });
   }
 
   // --------------------------------------------------------------- controls
 
+  function setTransport(transport, restart) {
+    state.transport = transport;
+    el.transportBtn.textContent = 'Yol: ' + (transport === 'direct' ? 'doğrudan' : 'canvas');
+    document.body.classList.toggle('canvas-transport', transport === 'canvas');
+    if (restart && state.videoId) start(currentPosition());
+  }
+
   function togglePlay() {
     if (!state.videoId) return;
+
     if (state.playing) {
-      var position = currentPosition();
-      teardown();
-      state.playing = false;
-      state.startOffset = position;
+      // The direct path has a real buffer, so pausing it keeps that buffer;
+      // tearing the stream down would throw the buffer away.
+      if (isDirect()) {
+        el.video.pause();
+        state.playing = false;
+        state.startOffset = state.startOffset + el.video.currentTime;
+        // currentTime is now folded into startOffset, so do not count it twice.
+        el.video.currentTime = 0;
+      } else {
+        var position = currentPosition();
+        teardown();
+        state.playing = false;
+        state.startOffset = position;
+      }
       el.playPause.textContent = '▶';
       setStatus('duraklatıldı');
-    } else {
-      start(state.startOffset);
+      return;
     }
+
+    if (isDirect() && el.video.src && el.video.readyState > 0) {
+      el.video.play();
+      state.playing = true;
+      el.playPause.textContent = '❚❚';
+      setStatus('akıyor');
+      return;
+    }
+    start(state.startOffset);
   }
 
   function seekFromEvent(event) {
@@ -367,6 +446,24 @@
     var x = (event.touches ? event.touches[0].clientX : event.clientX) - rect.left;
     var ratio = Math.min(1, Math.max(0, x / rect.width));
     return ratio * duration;
+  }
+
+  // Within what the direct path has already downloaded, a seek is instant and
+  // costs the server nothing. Only jumps beyond the buffer need a new stream.
+  function seekTo(target) {
+    if (isDirect() && el.video.readyState > 0) {
+      var wanted = target - state.startOffset;
+      var ranges = el.video.buffered;
+      for (var i = 0; i < ranges.length; i++) {
+        if (wanted >= ranges.start(i) && wanted <= ranges.end(i) - 0.5) {
+          el.video.currentTime = wanted;
+          setStatus('akıyor');
+          return;
+        }
+      }
+    }
+    setStatus('aranıyor…');
+    start(target);
   }
 
   function paintSeek(position) {
@@ -410,6 +507,10 @@
     setQuality(next);
   });
 
+  el.transportBtn.addEventListener('click', function () {
+    setTransport(isDirect() ? 'canvas' : 'direct', true);
+  });
+
   el.audioBtn.addEventListener('click', function () {
     setAudioMode(state.audioMode === 'muxed' ? 'separate' : 'muxed', true);
   });
@@ -425,6 +526,34 @@
     el.query.value = '';
     el.results.innerHTML = '';
     setStatus('hazır');
+  });
+
+  // Copying a stream instead of re-encoding it means the cut can only land on
+  // a keyframe, so the server may start a little earlier than asked. Left
+  // uncorrected the seek bar reads ahead of the picture by up to one keyframe
+  // interval. When the browser reports a finite duration the true start is
+  // recoverable — total length minus what remains — and when it does not, the
+  // requested offset stands as the best estimate available.
+  el.video.addEventListener('loadedmetadata', function () {
+    var total = state.meta && state.meta.duration;
+    var remaining = el.video.duration;
+    if (!total || !isFinite(remaining) || remaining <= 0) return;
+
+    var actualStart = total - remaining;
+    // Only trust a correction that moves the start backwards by a sane amount;
+    // anything else means the duration is not what we think it is.
+    if (actualStart >= -1 && actualStart <= state.startOffset + 1) {
+      state.startOffset = Math.max(0, actualStart);
+    }
+  });
+
+  el.video.addEventListener('playing', function () { setStatus('akıyor'); });
+  el.video.addEventListener('waiting', function () { setStatus('tampon bekleniyor…'); });
+  el.video.addEventListener('ended', handleEnded);
+  el.video.addEventListener('error', function () {
+    if (!state.playing || !isDirect()) return;
+    toast('Doğrudan akış hatası — canvas yoluna geçiliyor');
+    setTransport('canvas', true);
   });
 
   el.seek.addEventListener('pointerdown', function (event) {
@@ -452,8 +581,7 @@
     } catch (e) {
       // Capture may already have been released by the browser.
     }
-    setStatus('aranıyor…');
-    start(state.scrubPosition);
+    seekTo(state.scrubPosition);
   });
 
   // Tapping the picture reveals the bar; it fades again once untouched.
@@ -466,13 +594,14 @@
     }, 4000);
   }
   el.canvas.addEventListener('pointerdown', showBar);
+  el.video.addEventListener('pointerdown', showBar);
   el.bar.addEventListener('pointerdown', showBar);
 
   document.addEventListener('keydown', function (event) {
     if (document.activeElement === el.query) return;
     if (event.code === 'Space') { event.preventDefault(); togglePlay(); }
-    if (event.code === 'ArrowRight') start(currentPosition() + 15);
-    if (event.code === 'ArrowLeft') start(Math.max(0, currentPosition() - 15));
+    if (event.code === 'ArrowRight') seekTo(currentPosition() + 15);
+    if (event.code === 'ArrowLeft') seekTo(Math.max(0, currentPosition() - 15));
   });
 
   window.addEventListener('beforeunload', teardown);
@@ -490,11 +619,12 @@
     })
     .catch(function () { setQuality(state.quality); });
 
+  setTransport('direct', false);
+  setAudioMode('muxed', false);
+
   var initial = new URLSearchParams(location.search).get('v');
   if (initial) {
     el.query.value = initial;
     loadInput(initial);
   }
-
-  setAudioMode('muxed', false);
 })();

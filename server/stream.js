@@ -87,6 +87,38 @@ async function startVideoStream({ videoId, quality, startTime = 0, withAudio = t
 }
 
 /**
+ * Fragmented MP4 on stdout, remuxed rather than re-encoded.
+ *
+ * The Drive lockout that the canvas path exists to route around turns out to
+ * be absent on current firmware — <video> keeps playing at speed — so the
+ * pixels no longer need laundering through a JavaScript decoder. Copying
+ * YouTube's existing H.264 straight into a container costs the server almost
+ * nothing and hands the car full quality with hardware decoding.
+ *
+ * The fragmenting flags matter: a normal MP4 puts its index at the end, which
+ * a pipe can never reach, so the browser would wait forever before painting.
+ */
+async function startDirectStream({ videoId, quality, startTime = 0 }) {
+  const streams = await youtube.resolveStreams(videoId, quality, { preferAvc: true });
+
+  const args = ['-hide_banner', '-loglevel', 'error'];
+  args.push(...inputArgs(streams.video, startTime));
+  if (streams.audio) args.push(...inputArgs(streams.audio, startTime));
+
+  args.push('-map', '0:v:0');
+  args.push('-map', streams.audio ? '1:a:0' : '0:a:0?');
+
+  args.push(
+    '-c', 'copy',
+    '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
+    '-f', 'mp4',
+    '-',
+  );
+
+  return spawnFfmpeg(args, `direct ${videoId}@${quality}p t=${startTime}`);
+}
+
+/**
  * MP3 on stdout for the fallback audio path.
  *
  * Muxed MP2 decoded by JSMpeg into WebAudio keeps perfect A/V sync, but if
@@ -155,4 +187,4 @@ function spawnFfmpeg(args, label) {
   };
 }
 
-module.exports = { startVideoStream, startAudioStream, sessionCount, atCapacity };
+module.exports = { startVideoStream, startDirectStream, startAudioStream, sessionCount, atCapacity };

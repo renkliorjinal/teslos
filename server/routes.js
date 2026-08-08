@@ -48,6 +48,36 @@ router.get('/search', async (req, res) => {
   }
 });
 
+// Direct path: a remuxed MP4 body for an ordinary <video> element. No
+// transcoding, so this costs a fraction of the canvas path and looks far
+// better. Seeking works by re-requesting with a new ?t= — a piped fragmented
+// MP4 carries no index for the browser to seek within.
+router.get('/stream', async (req, res) => {
+  const videoId = youtube.parseVideoId(req.query.v);
+  if (!videoId) return fail(res, 400, 'Geçersiz video kimliği');
+  if (stream.atCapacity()) return fail(res, 503, 'Sunucu kapasitesi dolu');
+
+  const quality = config.resolveQuality(req.query.q);
+  const startTime = Math.max(0, Number(req.query.t) || 0);
+
+  let session;
+  try {
+    session = await stream.startDirectStream({ videoId, quality, startTime });
+  } catch (err) {
+    return fail(res, 502, err.message);
+  }
+
+  res.writeHead(200, {
+    'Content-Type': 'video/mp4',
+    'Cache-Control': 'no-store',
+    'Connection': 'close',
+  });
+
+  session.stdout.pipe(res);
+  session.proc.on('close', () => res.end());
+  res.on('close', () => session.stop());
+});
+
 // Fallback audio path: a plain MP3 body for an <audio> element, used when
 // WebAudio turns out to be unavailable in Drive.
 router.get('/audio', async (req, res) => {

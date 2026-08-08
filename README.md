@@ -9,15 +9,44 @@ instead of a `<video>` element.
 
 ---
 
-## Why this works
+## What the car actually does
 
-Tesla's browser is an embedded Chromium (QtWebEngine). It stays usable in Drive,
-but the car pauses `<video>` elements at the OS level the moment it leaves Park.
-A paused element also poisons `drawImage()`, so frames cannot be laundered
-through one into a canvas.
+Older Tesla firmware paused `<video>` elements at the OS level the moment the
+car left Park, and a paused element also poisons `drawImage()`, so video frames
+could not reach a canvas either. Routing around that is what this project was
+built for.
 
-The lockout is attached to the **element**, not to the video data. So this
-project never creates a `<video>` at all:
+**That restriction is absent on current firmware.** Measured with `/probe/` in a
+Model 3 on Chromium 140, at 104 km/h:
+
+| Capability | At speed |
+|---|---|
+| `<video>` element | **keeps playing** |
+| `<canvas>` + WebGL | works, 60 fps |
+| WebCodecs `VideoDecoder` | works, decoded H.264 (`avc1.42C01E`) |
+| WebSocket, WebAssembly | work |
+| WebAudio | works, clock advancing |
+| `<audio>` element | works |
+| `drawImage(video, …)` | black — even parked |
+| Theater apps (YouTube/Netflix) | still gated to Park |
+
+So before installing any of this, **open youtube.com in the car's browser and
+press play.** If that works, you do not need this project.
+
+## The two transports
+
+**direct** (default) — an ordinary `<video>` element fed a remuxed MP4. The
+server copies YouTube's existing H.264 and AAC into a fragmented container
+without re-encoding:
+
+```
+YouTube ──yt-dlp──► ffmpeg -c copy ──fragmented MP4──► <video>
+```
+
+Near-zero server CPU, hardware decoding, full quality. This is what to use.
+
+**canvas** (fallback) — MPEG1 in an MPEG-TS over a WebSocket, decoded by JSMpeg
+in JavaScript and painted into a `<canvas>`:
 
 ```
 YouTube ──yt-dlp──► ffmpeg ──MPEG1-TS──► WebSocket ──► JSMpeg ──► <canvas>
@@ -25,36 +54,23 @@ YouTube ──yt-dlp──► ffmpeg ──MPEG1-TS──► WebSocket ──►
                        └────MP2 audio muxed into the same transport stream
 ```
 
-Measured behaviour of the Tesla browser, from published probes and this repo's
-own `/probe/` page:
+Never touches a `<video>` element, so it survives the old lockout. It costs a
+full realtime transcode per viewer and MPEG1 looks poor next to H.264, but on
+firmware that still enforces the restriction it is the only thing that works.
+The player switches to it automatically if the direct stream never starts.
 
-| Capability | In Drive |
-|---|---|
-| `<video>` element | paused at OS level, frame frozen |
-| `drawImage(video, …)` | black |
-| `<canvas>` + WebGL | **works** |
-| WebSocket | **works** |
-| WebAssembly | **works** |
-| `<audio>` element | **works** |
-| WebAudio | usually works — `/probe/` confirms per firmware |
-| WebCodecs (`VideoDecoder`) | absent |
-| Theater apps (YouTube/Netflix) | hard-gated to Park |
+### Audio on the canvas path
 
-MPEG1 is an unfashionable codec, but it is the one JSMpeg can decode in plain
-JavaScript at 30 fps, and its inter-frame compression costs roughly a fifth of
-what a JPEG frame sequence would.
-
-### Audio
-
-Two paths, because WebAudio behaviour in Drive varies by firmware:
+The direct path carries its own audio inside the MP4. The canvas path has two
+options, because WebAudio behaviour in Drive varies by firmware:
 
 - **muxed** (default) — MP2 inside the same transport stream, decoded by JSMpeg
   into WebAudio. Shares a clock with the video, so it stays in sync.
 - **separate** — a plain MP3 body driving an `<audio>` element. Survives Drive
   on every firmware seen so far, but drifts; the player exposes ±0.5 s nudges.
 
-The player starts on *muxed* and falls back to *separate* on its own if the
-audio context has not reached `running` within four seconds.
+It starts on *muxed* and falls back to *separate* on its own if the audio
+context has not reached `running` within four seconds.
 
 ### Networking
 
@@ -150,6 +166,9 @@ Open `https://your-host/` in the car.
 
 ### Quality presets
 
+On the **canvas** path these are transcode targets, and MPEG1 needs a lot of
+bitrate to look tolerable:
+
 | Preset | Scale | Video | ≈ Total with audio | Data per hour |
 |---|---|---|---|---|
 | 360p | 640×360 | 600 kbit/s | ~0.7 Mbit/s | ~0.3 GB |
@@ -157,16 +176,20 @@ Open `https://your-host/` in the car.
 | 720p | 1280×720 | 1.8 Mbit/s | ~1.9 Mbit/s | ~0.9 GB |
 | 1080p | 1920×1080 | 3.0 Mbit/s | ~3.1 Mbit/s | ~1.4 GB |
 
-480p is the default; over the car's LTE it is the sensible ceiling for most
-links. Browsing over cellular at all requires Premium Connectivity — on Wi-Fi it
-is free.
+On the **direct** path the preset only caps which YouTube rendition is picked;
+the bitrate is whatever YouTube already encoded, which for H.264 is far less
+than the equivalent row above.
+
+480p is the default. Browsing over cellular at all requires Premium
+Connectivity — on Wi-Fi it is free.
 
 ### Server load
 
-Each viewer is one ffmpeg process doing a realtime software transcode. A 1 vCPU
-droplet handles roughly one 480p session; `MAX_SESSIONS` (default 2) is the
-valve, and sessions past it are refused with a message rather than degrading
-everyone.
+On the direct path each viewer is an ffmpeg process copying packets, which is
+cheap enough to ignore. On the canvas path it is a realtime software transcode,
+and a 1 vCPU droplet handles roughly one 480p session. `MAX_SESSIONS` (default
+2) is the valve either way, and sessions past it are refused with a message
+rather than degrading everyone.
 
 ---
 
@@ -188,19 +211,22 @@ deploy/        nginx and systemd templates
 
 ## Known limitations
 
-- **Seeking is a stream restart.** There is no client-side buffer to scrub, so
-  a seek tears down the socket and reopens it with a new `?t=` offset. Expect a
-  second or two of black.
+- **Seeking past the buffer restarts the stream.** The direct path can seek
+  instantly inside what it has already downloaded; beyond that, and always on
+  the canvas path, the stream reopens at a new `?t=` offset.
+- **Direct seeks land on a keyframe.** Copying rather than re-encoding means the
+  cut can only fall on one, so playback may begin slightly before the requested
+  point. The player corrects its position display when the browser reports a
+  usable duration.
 - **MPEG1 is soft-decoded in JavaScript.** Fine at 480p; 1080p leans on both the
-  car's CPU and the server's.
+  car's CPU and the server's. Only relevant on the canvas path.
 - **Separate-audio mode drifts.** Only relevant if WebAudio turns out to be
   suppressed on your firmware.
 - **yt-dlp is load-bearing.** YouTube changes break it regularly; keep it
   updated.
-- **Not tested against Tesla firmware 2026.26+**, which opened camera and
-  microphone access to the browser. If that release also enabled WebRTC, a much
-  simpler transport becomes possible — `/probe/` reports `RTCPeerConnection`
-  and will say so.
+- **WebRTC is available and unused.** `/probe/` reports `RTCPeerConnection` as
+  present on current firmware. It would be a plausible transport, but with
+  `<video>` unrestricted there is nothing left for it to solve.
 
 ## Licence
 

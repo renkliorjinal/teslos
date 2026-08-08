@@ -15,7 +15,9 @@
      viewport. object-fit does the letterboxing; without it the canvas would
      render at its intrinsic size as a small window in the middle of the
      screen. Verified to letterbox rather than stretch on Chromium. */
-  #screen { width: 100%; height: 100%; object-fit: contain; display: block; }
+  #screen, #direct { width: 100%; height: 100%; object-fit: contain; display: block; }
+  /* Only one transport renders at a time. */
+  #screen.off, #direct.off { display: none; }
 
   .overlay { position: absolute; inset: 0; background: rgba(5,5,10,.94);
              display: flex; align-items: center; justify-content: center; padding: 20px; z-index: 20; }
@@ -55,9 +57,12 @@
   .chip.on { background: #00506b; border-color: #00779e; }
   .chip:active { opacity: .6; }
 
-  /* Drift correction only means anything for the separate <audio> path. */
+  /* Audio path choices only exist on the canvas transport; the direct one
+     carries its own audio inside the MP4. */
+  .audio-only { display: none; }
+  body.canvas-transport .audio-only { display: inline-block; }
   .nudge { display: none; }
-  body.separate-audio .nudge { display: inline-block; }
+  body.canvas-transport.separate-audio .nudge { display: inline-block; }
 
   .toast { position: absolute; top: 20px; left: 50%; transform: translateX(-50%); z-index: 30;
            background: #2a1116; border: 1px solid #742; color: #ffb4b4; padding: 14px 20px;
@@ -67,6 +72,7 @@
 <body>
 <div class="stage">
   <canvas id="screen"></canvas>
+  <video id="direct" playsinline></video>
   <div class="toast" id="toast"></div>
 
   <div class="overlay" id="overlay">
@@ -106,7 +112,8 @@
       <span class="time" id="time">0:00 / 0:00</span>
       <span class="title" id="title">—</span>
       <button class="chip" id="qualityBtn">480p</button>
-      <button class="chip" id="audioBtn">Ses: muxed</button>
+      <button class="chip" id="transportBtn">Yol: doğrudan</button>
+      <button class="chip audio-only" id="audioBtn">Ses: muxed</button>
       <button class="chip nudge" id="nudgeBack">Ses −0,5s</button>
       <button class="chip nudge" id="nudgeFwd">Ses +0,5s</button>
       <button class="chip" id="libBtn">Değiştir</button>
