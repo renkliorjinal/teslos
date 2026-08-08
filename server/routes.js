@@ -21,6 +21,8 @@ router.get('/health', (req, res) => {
     maxSessions: config.maxSessions,
     defaultQuality: config.DEFAULT_QUALITY,
     qualities: Object.keys(config.QUALITY).map(Number),
+    ytClient: youtube.activeClient(),
+    cookies: Boolean(config.cookies),
   });
 });
 

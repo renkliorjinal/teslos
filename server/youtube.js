@@ -60,6 +60,68 @@ function runYtDlp(args, { timeout = 30000 } = {}) {
   });
 }
 
+// YouTube answers a datacenter IP with "Sign in to confirm you're not a bot",
+// which is fatal to every request this server makes. Impersonating a different
+// YouTube client often gets through where the default does not, and costs
+// nothing to try.
+//
+// The order puts first the clients that need neither authentication nor the JS
+// player, so they sidestep the proof-of-origin dance entirely.
+const CLIENT_CHAIN = (process.env.YT_DLP_CLIENTS
+  || 'tv_simply,android_vr,ios,android,tv,mweb,web_safari,default')
+  .split(',').map((s) => s.trim()).filter(Boolean);
+
+let preferredClient = null;
+
+function clientArgs(client) {
+  return client && client !== 'default'
+    ? ['--extractor-args', `youtube:player_client=${client}`]
+    : [];
+}
+
+// A video that is private or deleted will fail identically on every client, so
+// only retry the failures that are about being refused rather than absent.
+function worthRetrying(message) {
+  if (/private video|video unavailable|removed by the uploader|does not exist|members[- ]only/i.test(message)) {
+    return false;
+  }
+  return /not a bot|sign in|po[_ ]?token|nsig|failed to extract|no video formats|requested format|unable to (download|extract)/i
+    .test(message);
+}
+
+async function runWithClients(args, opts) {
+  // A client that worked once is tried first next time; walking the whole
+  // chain on every request would add a round trip per video.
+  const order = preferredClient
+    ? [preferredClient, ...CLIENT_CHAIN.filter((c) => c !== preferredClient)]
+    : CLIENT_CHAIN.slice();
+
+  let lastError = new Error('yt-dlp produced no result');
+  for (const client of order) {
+    try {
+      const out = await runYtDlp([...args, ...clientArgs(client)], opts);
+      if (preferredClient !== client) {
+        preferredClient = client;
+        console.log(`[yt-dlp] player_client=${client} works`);
+      }
+      return out;
+    } catch (err) {
+      lastError = err;
+      if (!worthRetrying(err.message)) throw err;
+      if (preferredClient === client) preferredClient = null;
+    }
+  }
+
+  if (/not a bot|sign in|po[_ ]?token/i.test(lastError.message)) {
+    throw new Error('YouTube bu sunucuyu bot sanıyor; hiçbir istemci geçemedi. YT_DLP_COOKIES gerekiyor.');
+  }
+  throw lastError;
+}
+
+function activeClient() {
+  return preferredClient;
+}
+
 // `%(.{a,b})j` asks yt-dlp for a JSON object holding just those fields, which
 // avoids inventing a delimiter that a video title could contain anyway.
 function printJson(fields) {
@@ -92,7 +154,7 @@ function seconds(value) {
 // Title, duration and thumbnail for the player chrome. Deliberately a --print
 // call rather than -J: the full JSON dump for a long video is several MB.
 async function getMetadata(videoId) {
-  const out = await runYtDlp([
+  const out = await runWithClients([
     ...baseArgs(),
     '--print', printJson(['id', 'title', 'duration', 'is_live', 'uploader', 'thumbnail']),
     watchUrl(videoId),
@@ -135,7 +197,7 @@ async function resolveStreams(videoId, height, { preferAvc = false } = {}) {
       'best',
     ].join('/');
 
-  const out = await runYtDlp([...baseArgs(), '-f', format, '-g', watchUrl(videoId)]);
+  const out = await runWithClients([...baseArgs(), '-f', format, '-g', watchUrl(videoId)]);
   const urls = out.trim().split('\n').map((s) => s.trim()).filter((s) => s.startsWith('http'));
 
   if (urls.length === 0) throw new Error('yt-dlp returned no stream URL');
@@ -145,7 +207,7 @@ async function resolveStreams(videoId, height, { preferAvc = false } = {}) {
 
 async function search(query, limit = 12) {
   const count = Math.min(Math.max(Number(limit) || 12, 1), 25);
-  const out = await runYtDlp([
+  const out = await runWithClients([
     ...baseArgs(),
     '--flat-playlist',
     '--print', printJson(['id', 'title', 'duration', 'uploader']),
@@ -162,4 +224,4 @@ async function search(query, limit = 12) {
     .filter((item) => VIDEO_ID.test(item.videoId));
 }
 
-module.exports = { parseVideoId, watchUrl, getMetadata, resolveStreams, search };
+module.exports = { parseVideoId, watchUrl, getMetadata, resolveStreams, search, activeClient, CLIENT_CHAIN };

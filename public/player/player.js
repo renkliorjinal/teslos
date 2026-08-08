@@ -238,8 +238,10 @@
       + '&q=' + state.quality
       + '&t=' + Math.floor(state.startOffset);
     el.video.play().catch(function (err) {
-      toast('Oynatma reddedildi: ' + err.name);
-      setStatus('durdu');
+      // NotSupportedError here usually means the body was not video at all but
+      // the server's JSON explanation. The error handler below digs that out,
+      // so say nothing that would talk over it.
+      if (err.name !== 'NotSupportedError') toast('Oynatma reddedildi: ' + err.name);
     });
 
     // If the car does still pause <video> — older firmware than the one this
@@ -550,10 +552,44 @@
   el.video.addEventListener('playing', function () { setStatus('akıyor'); });
   el.video.addEventListener('waiting', function () { setStatus('tampon bekleniyor…'); });
   el.video.addEventListener('ended', handleEnded);
+  // A <video> element reports every failure as the same opaque error, so a
+  // server-side problem — YouTube refusing the request, say — surfaces as
+  // "NotSupportedError" and sends the driver looking at the wrong thing. The
+  // server's actual explanation is sitting in the body the element declined to
+  // play, so go and read it.
   el.video.addEventListener('error', function () {
     if (!state.playing || !isDirect()) return;
-    toast('Doğrudan akış hatası — canvas yoluna geçiliyor');
-    setTransport('canvas', true);
+
+    var fallback = function (message) {
+      toast(message);
+      setTransport('canvas', true);
+    };
+
+    var controller = new AbortController();
+    fetch(el.video.currentSrc || el.video.src, { signal: controller.signal })
+      .then(function (response) {
+        var type = response.headers.get('content-type') || '';
+        if (type.indexOf('json') === -1) {
+          // Really is video, so the car could not decode it. Canvas can.
+          controller.abort();
+          fallback('Doğrudan akış oynatılamadı — canvas yoluna geçiliyor');
+          return null;
+        }
+        return response.json();
+      })
+      .then(function (body) {
+        if (!body) return;
+        // A server-side refusal will fail the canvas path identically, so
+        // switching transports would only hide the reason.
+        state.playing = false;
+        el.playPause.textContent = '▶';
+        setStatus('durdu');
+        toast(body.error || 'Sunucu akışı reddetti');
+      })
+      .catch(function (err) {
+        if (err.name === 'AbortError') return;
+        fallback('Doğrudan akış hatası — canvas yoluna geçiliyor');
+      });
   });
 
   el.seek.addEventListener('pointerdown', function (event) {

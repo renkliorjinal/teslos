@@ -3,7 +3,7 @@
 // Pre-flight check. Every failure mode below shows up in the car as a blank
 // canvas, which is a miserable thing to debug from the driver's seat.
 
-const { execFile, execFileSync } = require('child_process');
+const { execFileSync } = require('child_process');
 const config = require('./config');
 
 let failures = 0;
@@ -72,24 +72,25 @@ console.log('');
 // A real resolve is the only check that proves the whole chain works from this
 // host's IP, so it runs last and is allowed to be slow.
 if (ytDlpVersion) {
-  console.log('  ...  testing a real YouTube resolve (this takes a few seconds)');
-  const args = ['--no-warnings', '--no-playlist'];
-  if (config.cookies) args.push('--cookies', config.cookies);
-  args.push('-f', 'best[height<=480]', '-g', 'https://www.youtube.com/watch?v=aqz-KE-bpKQ');
+  console.log('  ...  testing a real YouTube resolve against each player client');
+  const youtube = require('./youtube');
 
-  execFile(config.ytDlp, args, { timeout: 45000 }, (err, stdout, stderr) => {
-    if (err || !String(stdout).trim().startsWith('http')) {
-      const detail = (stderr || err?.message || '').trim().split('\n').slice(-1)[0];
-      fail('youtube resolve', detail || 'no URL returned');
-      if (/bot|sign in|cookies/i.test(detail || '')) {
-        console.log('\n  YouTube is challenging this IP. Export cookies from a logged-in');
-        console.log('  browser in Netscape format and point YT_DLP_COOKIES at the file.');
+  youtube.resolveStreams('aqz-KE-bpKQ', 480)
+    .then(() => {
+      pass('youtube resolve', `player_client=${youtube.activeClient()}`);
+      finish();
+    })
+    .catch((err) => {
+      const detail = err.message.trim().split('\n').slice(-1)[0];
+      fail('youtube resolve', detail);
+      if (/bot|sign in|cookies|po[_ ]?token/i.test(detail)) {
+        console.log(`\n  Tried: ${youtube.CLIENT_CHAIN.join(', ')}`);
+        console.log('  YouTube refused this IP on every one. Export cookies from a');
+        console.log('  logged-in browser in Netscape format and point YT_DLP_COOKIES');
+        console.log('  at the file. Treat it as a credential: chmod 600.');
       }
-    } else {
-      pass('youtube resolve', 'stream URL returned');
-    }
-    finish();
-  });
+      finish();
+    });
 } else {
   finish();
 }
