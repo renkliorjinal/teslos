@@ -92,7 +92,9 @@ function compare() {
     ['<video> paused', (r) => r.live?.videoPaused],
     ['<video> drawable', (r) => r.live?.videoDrawable],
     ['AudioContext', (r) => r.live?.audioContextState],
+    ['audio clock moving', (r) => r.live?.audioClockAdvancing],
     ['<audio> playing', (r) => r.live?.audioElementPlaying],
+    ['<audio> advancing', (r) => r.live?.audioElementAdvancing],
     ['link Mbit/s', (r) => r.live?.linkMbps],
   ];
 
@@ -138,11 +140,22 @@ function compare() {
     console.log(`  ${YELLOW}WebCodecs stopped decoding in Drive — stay on the MPEG1 path.${OFF}`);
   }
 
+  // "running" on its own is not proof: a context can report running while its
+  // clock has stopped. The clock is the honest signal.
   const ac = driveReport.live?.audioContextState;
-  if (ac === 'running') {
+  const acMoving = driveReport.live?.audioClockAdvancing;
+  if (ac === 'running' && acMoving !== false) {
     console.log(`  ${GREEN}WebAudio survived Drive — keep the muxed audio path.${OFF}`);
+  } else if (ac === 'running' && acMoving === false) {
+    console.log(`  ${YELLOW}AudioContext claims "running" but its clock froze in Drive — use the <audio> fallback.${OFF}`);
   } else if (ac) {
     console.log(`  ${YELLOW}AudioContext was "${ac}" in Drive — the player will use the <audio> fallback.${OFF}`);
+  }
+
+  if (driveReport.live?.audioElementAdvancing === false) {
+    console.log(`  ${RED}The <audio> element also stopped in Drive — no audio path survives.${OFF}`);
+  } else if (driveReport.live?.audioElementAdvancing) {
+    console.log(`  ${GREEN}The <audio> fallback kept playing in Drive.${OFF}`);
   }
 
   if (driveReport.live?.videoDrawable === false) {
@@ -202,8 +215,10 @@ line('WebCodecs decode', live.webcodecsSupported === false
   : live.webcodecsFrames
     ? `${live.webcodecsFrames} frames @ ${live.webcodecsFps ?? '?'} fps  ${DIM}${live.webcodecsCodec || ''}${OFF}`
     : live.webcodecsState || 'not tested');
-line('AudioContext', live.audioContextState || 'not tested');
-line('<audio> element', live.audioElementPlaying === undefined ? 'not tested' : String(live.audioElementPlaying));
+const clock = (moving) => (moving === undefined || moving === null ? '' : moving ? ' · clock advancing' : ` ${RED}· clock frozen${OFF}`);
+line('AudioContext', (live.audioContextState || 'not tested') + clock(live.audioClockAdvancing));
+line('<audio> element', (live.audioElementPlaying === undefined ? 'not tested' : String(live.audioElementPlaying))
+  + clock(live.audioElementAdvancing));
 line('Link speed', live.linkMbps ? `${live.linkMbps} Mbit/s — ${live.linkAdvice || ''}` : 'not tested');
 
 // ---------------------------------------------------------------- verdict
