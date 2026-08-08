@@ -1,11 +1,11 @@
 # teslos
 
-YouTube playback in the Tesla centre-screen browser, rendered to a `<canvas>`
-instead of a `<video>` element.
+A YouTube player for the Tesla centre-screen browser, plus a probe that
+measures what that browser will and will not do while the car is moving.
 
 > **Note on lawfulness.** A driver watching video while the car is moving is
-> illegal in Turkey and most other jurisdictions, and Tesla's lockout exists
-> for that reason. Nothing here removes the risk that restriction addresses.
+> illegal in Turkey and most other jurisdictions. Current firmware no longer
+> stops it, which changes nothing about the risk.
 
 ---
 
@@ -155,14 +155,20 @@ file as a credential: it is an active session for the account it came from.
 
 Open `https://your-host/` in the car.
 
-1. **`/probe/`** first. Run it parked, then keep the tab open while driving and
-   watch three things: does the canvas counter keep climbing, does `<video>`
-   drop to `paused = true`, does sound still come out. Those three answers
-   decide whether the rest works, and the page uploads a JSON report to
-   `probe-reports/`. It also measures the car's actual link speed, which is how
-   you pick a quality preset rather than guessing.
+1. **`/probe/`** first, to find out what this particular firmware allows.
+   Allow the location prompt — GPS speed is how a sample is labelled Park or
+   Drive, and inferring that from `<video>` pausing would be circular, since
+   that is the thing under test. Press **OTOMATİK RAPOR**, drive, press it
+   again; it posts a sample to `probe-reports/` every 20 seconds so nobody has
+   to touch the screen while moving. It also measures link speed, which is how
+   to pick a quality preset rather than guessing.
+
+   Then `npm run report -- diff` on the server, which pairs the newest Park
+   sample with the newest Drive one and says what changed.
+
 2. **`/player/`** to watch. Paste a link or search; tap the picture for
-   controls.
+   controls. It starts on the direct transport and drops to canvas by itself
+   if that does not play.
 
 ### Quality presets
 
