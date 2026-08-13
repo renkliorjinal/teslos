@@ -121,6 +121,45 @@ diagnostics panel. The decoder's own `decodedTime` looks like the obvious signal
 and is not — it advances happily while decoding into a suspended context, which
 is exactly the case where the car is silent.
 
+### Watch history, and picking up where you left off
+
+YouTube's own history needs the cookie jar; Google exposes it to no API, so a
+phone sign-in cannot produce it. teslos therefore keeps its own — every video
+played through it, with the position reached, in `history.json` under the state
+directory. That is worse than YouTube's in one way (it only knows what was
+watched here) and better in the way that matters in a car: it resumes.
+
+Progress is posted every few seconds rather than at the end, because the end is
+exactly what does not happen — the car is switched off, the page is closed, the
+link drops. A video opened for under ten seconds is not recorded, and one within
+half a minute of either end does not offer to resume. Opening a video with a
+stored position resumes there and says so, with a **BAŞTAN OYNAT** button in the
+same message.
+
+The **Geçmiş** tab is therefore always on offer, and the grid draws how far into
+each video the driver got. When it is empty the picker falls through to the next
+tab rather than opening on nothing.
+
+### Losing the connection
+
+The two halves of playback fail very differently, and the asymmetry is the
+problem. The soundtrack is an `<audio>` element fed over HTTP and the browser
+buffers everything that arrives, so after ten minutes it may hold several
+minutes ahead. The picture holds seconds. Left alone, an outage means the sound
+plays merrily on over a frozen frame.
+
+A short cut is absorbed: that is what the buffer is built for, and stopping
+playback for a two-second hiccup would be a regression. But when the decoder has
+had no frame to give for two seconds and nothing has come down the socket for
+six, playback **stops** — the soundtrack is paused, an opaque panel says what is
+happening, and the position is held.
+
+Recovery retries with a backoff (3 s doubling to 30 s), because reaching this
+server is not the same as being able to play: a dead car link fails the check
+outright, but a server that cannot reach YouTube answers cheerfully and then
+delivers nothing. Only real bytes arriving reset the count. When the stream
+comes back, both halves restart from where they stopped.
+
 ### Networking
 
 Tesla's browser refuses RFC1918 addresses (`192.168.x.x`, `10.x.x.x`,

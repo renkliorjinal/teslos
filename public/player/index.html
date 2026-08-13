@@ -44,6 +44,11 @@
   .thumb .len { position: absolute; right: 6px; bottom: 6px; background: rgba(0,0,0,.82);
                 color: #fff; font-size: .74rem; padding: 2px 6px; border-radius: 4px;
                 font-variant-numeric: tabular-nums; }
+  /* How far into this one the driver got, which is what history is scanned
+     for. Sits on the thumbnail the way YouTube's own does. */
+  .thumb .seen { position: absolute; left: 0; right: 0; bottom: 0; height: 4px;
+                 background: rgba(255,255,255,.28); }
+  .thumb .seen i { display: block; height: 100%; background: #e33; }
   .card .meta { padding: 10px 11px; }
   .card .meta b { display: block; font-size: .9rem; line-height: 1.35; max-height: 2.7em;
                   overflow: hidden; }

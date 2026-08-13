@@ -7,6 +7,7 @@ const express = require('express');
 const config = require('./config');
 const youtube = require('./youtube');
 const oauth = require('./oauth');
+const history = require('./history');
 const stream = require('./stream');
 
 const router = express.Router();
@@ -36,6 +37,8 @@ router.get('/health', (req, res) => {
     feeds: [...new Set([
       ...(config.cookies ? youtube.feedNames() : []),
       ...oauth.status().feeds,
+      // Served locally when nothing better can, so it is always on offer.
+      'history',
       'trending',
     ])],
     proxy: config.maskProxy(config.proxy) || null,
@@ -49,10 +52,43 @@ router.get('/meta', async (req, res) => {
 
   try {
     const meta = await youtube.getMetadata(videoId);
-    res.json({ ok: true, ...meta });
+    // Where this was left, if it was. The player asks for metadata before every
+    // start anyway, so resuming costs no extra round trip.
+    res.json({ ok: true, ...meta, resumeAt: history.resumeAt(videoId) });
   } catch (err) {
     fail(res, 502, err.message);
   }
+});
+
+// ------------------------------------------------------------------ history
+//
+// YouTube's own watch history needs a cookie jar; Google exposes it to no API.
+// This is the local substitute, and it carries the one thing YouTube's does not
+// hand back through any interface: how far into each video the driver got.
+
+router.get('/history', (req, res) => {
+  res.json({ ok: true, items: history.list(req.query.limit) });
+});
+
+router.post('/progress', express.json({ limit: '8kb' }), (req, res) => {
+  const body = req.body || {};
+  const videoId = youtube.parseVideoId(body.videoId);
+  if (!videoId) return fail(res, 400, 'Geçersiz video kimliği');
+  history.record({ ...body, videoId });
+  // Nothing to say back; the player posts this on a timer and never reads it.
+  res.json({ ok: true });
+});
+
+router.delete('/history', (req, res) => {
+  if (!requireToken(req, res)) return;
+  if (req.query.v) {
+    const videoId = youtube.parseVideoId(req.query.v);
+    if (!videoId) return fail(res, 400, 'Geçersiz video kimliği');
+    history.forget(videoId);
+  } else {
+    history.clear();
+  }
+  res.json({ ok: true, items: history.list() });
 });
 
 router.get('/search', async (req, res) => {
@@ -81,6 +117,10 @@ router.get('/feed', async (req, res) => {
   const sources = [];
   if (config.cookies) sources.push(() => youtube.feed(name, req.query.limit));
   if (oauth.canServe(name)) sources.push(() => oauth.feed(name, req.query.limit));
+  // Always last for history, so a cookie jar's richer version wins when there
+  // is one — but never absent, because this is the only source that knows where
+  // each video was left.
+  if (name === 'history') sources.push(async () => history.list(req.query.limit));
   // With neither credential only `trending` has anything in it, and youtube.js
   // is the one that knows how to say so.
   if (!sources.length) sources.push(() => youtube.feed(name, req.query.limit));

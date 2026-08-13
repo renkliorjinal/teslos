@@ -82,6 +82,16 @@
     recuts: 0,
     bufferSeconds: 0,
     bufferFill: -1,
+    resumePoint: 0,
+    waiting: false,
+    waitingAt: 0,
+    lastDataAt: 0,
+    lastFrameAt: 0,
+    outageTries: 0,
+    outageAt: 0,
+    reconnectTimer: null,
+    progressPostedAt: 0,
+    watchedSeconds: 0,
     bitrates: { 360: 600000, 480: 1000000, 720: 1800000, 1080: 3000000 },
     audioStartedAt: 0,
     audioBase: 0,          // absolute position the fallback audio stream began at
@@ -112,10 +122,24 @@
     el.status.textContent = text;
   }
 
-  function toast(message) {
+  function toast(message, options) {
     el.toast.textContent = message;
     el.toast.style.display = 'block';
     clearTimeout(toast.timer);
+
+    // Some messages are an offer rather than a notice — "resuming, unless you
+    // would rather not" — and need somewhere to say no.
+    if (options && options.action) {
+      var button = document.createElement('button');
+      button.className = 'chip';
+      button.style.cssText = 'display:block;margin-top:10px;width:100%';
+      button.textContent = options.action;
+      button.addEventListener('click', function () {
+        el.toast.style.display = 'none';
+        options.onAction();
+      });
+      el.toast.appendChild(button);
+    }
 
     // When YouTube has refused the server, the car itself is not blocked — it
     // reaches YouTube from a mobile address rather than a datacenter one, and
@@ -273,6 +297,16 @@
         len.textContent = fmtTime(item.duration);
         thumb.appendChild(len);
       }
+      // History carries a position, and how far in you got is the thing you
+      // actually scan for when picking something back up.
+      if (item.position > 0 && item.duration) {
+        var seen = document.createElement('div');
+        seen.className = 'seen';
+        var done = document.createElement('i');
+        done.style.width = Math.min(100, (item.position / item.duration) * 100) + '%';
+        seen.appendChild(done);
+        thumb.appendChild(seen);
+      }
 
       var meta = document.createElement('div');
       meta.className = 'meta';
@@ -311,7 +345,11 @@
     return kept;
   }
 
-  function loadFeed(name) {
+  // `fallbacks` is only used on the opening load: a first tab that turns out to
+  // be empty should hand over to the next rather than greeting the driver with
+  // nothing. Watch history is the usual reason — it is the right thing to open
+  // on once there is something in it, and the wrong thing before.
+  function loadFeed(name, fallbacks) {
     document.querySelectorAll('.tab').forEach(function (tab) {
       tab.classList.toggle('on', tab.dataset.feed === name);
     });
@@ -322,6 +360,10 @@
       .then(function (r) { return r.json(); })
       .then(function (data) {
         if (!data.ok) {
+          if (fallbacks && fallbacks.length) {
+            loadFeed(fallbacks[0], fallbacks.slice(1));
+            return;
+          }
           // Everything but Popüler is account-specific, so an unsigned server
           // has nothing to show. Point at the fix rather than an empty grid.
           el.feedNote.innerHTML = '';
@@ -332,6 +374,10 @@
             link.textContent = 'YouTube girişi yap →';
             el.feedNote.appendChild(link);
           }
+          return;
+        }
+        if (!data.items.length && fallbacks && fallbacks.length) {
+          loadFeed(fallbacks[0], fallbacks.slice(1));
           return;
         }
         el.feedNote.textContent = '';
@@ -348,6 +394,10 @@
     el.bar.classList.remove('dim');
     history.replaceState(null, '', '?v=' + meta.videoId);
 
+    // Where this was left last time, if it was. The server keeps the record,
+    // because the point is to pick up on whichever screen is to hand.
+    state.resumePoint = Math.max(0, Number(meta.resumeAt) || 0);
+
     if (autostart === false) {
       // No gesture has happened yet, so starting now would play silently and
       // there would be no way to fix it after the fact.
@@ -356,7 +406,24 @@
       setStatus('başlatmak için dokun');
       return;
     }
-    start(0);
+    startFromResume();
+  }
+
+  function startFromResume() {
+    var at = state.resumePoint || 0;
+    start(at);
+    // Resuming silently would be wrong the one time it is not wanted, and a
+    // dialogue before every video would be wrong every other time. So it
+    // resumes, and says so, with the way back in the same breath.
+    if (at > 0) {
+      toast('Kaldığın yerden: ' + fmtTime(at), {
+        action: 'BAŞTAN OYNAT',
+        onAction: function () {
+          state.resumePoint = 0;
+          start(0);
+        },
+      });
+    }
   }
 
   // ------------------------------------------------------------- transport
@@ -405,7 +472,15 @@
 
   function start(position) {
     teardown();
+    // Only here, never on a re-cut: a re-opened socket that delivers nothing is
+    // exactly what an outage looks like, and refreshing this on every attempt
+    // let the reconnect loop hide it indefinitely.
+    state.lastDataAt = Date.now();
+    state.lastFrameAt = Date.now();
+    state.waiting = false;
+    clearTimeout(state.reconnectTimer);
     el.recut.classList.remove('on');
+    el.recut.textContent = 'hizalanıyor…';
 
     state.startOffset = Math.max(0, position || 0);
     state.streamStartedAt = performance.now();
@@ -526,6 +601,7 @@
   // Frames are decoding again, so the cover has done its job. The delay keeps
   // it up long enough to be a pause rather than a flash.
   function pictureAlive() {
+    if (state.waiting) return;
     if (!el.recut.classList.contains('on')) return;
     if (Date.now() < state.recutUntil) return;
     el.recut.classList.remove('on');
@@ -585,7 +661,13 @@
         decoded += 1;
         budget -= 1;
       }
-      if (decoded) pictureAlive();
+      if (decoded) {
+        // The one unambiguous sign the buffer still has something in it. The
+        // seconds-held figure is derived from a nominal bitrate and reads low;
+        // this is the decoder itself saying it had a frame to give.
+        state.lastFrameAt = Date.now();
+        pictureAlive();
+      }
     };
   }
 
@@ -643,6 +725,10 @@
       socket.onmessage = function (event) {
         var data = event.data;
         socketBytes += (data && (data.byteLength || data.size)) || 0;
+        // Doubles as the liveness signal the outage detector reads: a socket
+        // that stays open but stops delivering is what a lost link looks like.
+        state.lastDataAt = Date.now();
+        state.outageTries = 0;
         if (previous) previous.call(socket, event);
       };
     })(0);
@@ -673,6 +759,141 @@
       // The socket closed between the check and the send; the next tick copes.
     }
   }
+
+  /**
+   * Losing the connection.
+   *
+   * The two halves fail very differently, and that asymmetry is the problem.
+   * The soundtrack is an <audio> element fed over HTTP, and the browser buffers
+   * as much of it as arrives — after ten minutes it may be holding several
+   * minutes ahead. The picture holds seconds. So an outage used to leave the
+   * sound playing on merrily over a frozen frame, which is not "carrying on"
+   * in any sense the driver would recognise.
+   *
+   * They should stall together and resume together. When the picture has been
+   * starved for long enough to mean something, playback stops — properly, with
+   * the soundtrack paused — and waits for the link to come back.
+   */
+  var OUTAGE_AFTER_MS = 6000;
+
+  function dataArriving() {
+    return Date.now() - state.lastDataAt < OUTAGE_AFTER_MS;
+  }
+
+  function enterOutage() {
+    if (state.waiting || !state.playing) return;
+    state.waiting = true;
+    // A second outage inside a minute of the last one means the previous
+    // attempt achieved nothing, so the next wait should be longer.
+    if (Date.now() - state.outageAt < 60000) state.outageTries += 1;
+    else state.outageTries = 0;
+    state.outageAt = Date.now();
+    // The position to come back to, taken before anything is torn down.
+    state.waitingAt = masterPosition();
+
+    el.audio.pause();
+    el.recut.textContent = state.outageTries > 0
+      ? 'Bağlantı bekleniyor… (' + (state.outageTries + 1) + '. deneme)'
+      : 'İnternet bekleniyor…';
+    el.recut.classList.add('on');
+    state.recutUntil = 0;
+    setStatus('bağlantı yok');
+    teardownPicture();
+
+    pollForConnection();
+  }
+
+  // Backing off, because reaching the server is not the same as being able to
+  // play. A dead car link fails this outright; a server that cannot reach
+  // YouTube answers cheerfully and then delivers nothing, and retrying that
+  // every couple of seconds would restart playback over and over instead of
+  // waiting. Each failed attempt therefore waits longer, and only real data
+  // arriving clears the count.
+  function retryDelay() {
+    return Math.min(30000, 3000 * Math.pow(2, Math.min(state.outageTries, 4)));
+  }
+
+  function pollForConnection() {
+    clearTimeout(state.reconnectTimer);
+    state.reconnectTimer = setTimeout(function () {
+      if (!state.waiting) return;
+      fetch('/api/health', { cache: 'no-store' })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (health) {
+          if (!health || !health.ok) throw new Error('not ready');
+          leaveOutage();
+        })
+        .catch(function () {
+          state.outageTries += 1;
+          pollForConnection();
+        });
+    }, retryDelay());
+  }
+
+  function leaveOutage() {
+    if (!state.waiting) return;
+    state.waiting = false;
+    clearTimeout(state.reconnectTimer);
+    el.recut.classList.remove('on');
+    el.recut.textContent = 'hizalanıyor…';
+    setStatus('yeniden bağlanılıyor…');
+    // Both streams from the same point. The soundtrack's HTTP body died with
+    // the link, so it cannot simply be resumed — and restarting it here is
+    // right anyway, since playback is already stopped.
+    start(state.waitingAt || currentPosition());
+  }
+
+  // A dropped link often shows up as an offline event before any timeout does.
+  window.addEventListener('offline', function () {
+    if (state.playing) enterOutage();
+  });
+
+  /**
+   * Remembering where this got to.
+   *
+   * Posted on a timer rather than at the end, because the end is exactly what
+   * does not happen — the car is switched off, the page is closed, the link
+   * drops. Whatever arrived last is the answer.
+   */
+  function postProgress(force) {
+    if (!state.videoId || !state.meta) return;
+    var at = currentPosition();
+    if (!force && (!state.playing || state.waiting)) return;
+    if (!force && Date.now() - state.progressPostedAt < 10000) return;
+    state.progressPostedAt = Date.now();
+
+    var body = JSON.stringify({
+      videoId: state.videoId,
+      title: state.meta.title,
+      duration: state.meta.duration,
+      uploader: state.meta.uploader,
+      thumbnail: state.meta.thumbnail,
+      position: Math.floor(at),
+      watched: Math.floor(state.watchedSeconds),
+    });
+
+    // sendBeacon survives the page going away, which is the case that matters
+    // most and the one fetch() cannot serve.
+    if (force && navigator.sendBeacon) {
+      try {
+        navigator.sendBeacon('/api/progress', new Blob([body], { type: 'application/json' }));
+        return;
+      } catch (e) {
+        // Fall through to fetch.
+      }
+    }
+    fetch('/api/progress', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: body,
+      keepalive: true,
+    }).catch(function () { /* the next tick tries again */ });
+  }
+
+  window.addEventListener('pagehide', function () { postProgress(true); });
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'hidden') postProgress(true);
+  });
 
   // JSMpeg swallows close codes, but the socket object is reachable and the
   // reason string is the only place the server can explain a refusal.
@@ -724,10 +945,17 @@
 
     setStatus('bağlantı koptu, sürdürülüyor…');
     state.resumeTimer = setTimeout(function () {
-      // A dropped video socket is a picture problem. Restarting the whole
-      // session would take the soundtrack down with it, and the car would hand
-      // the speakers back to Spotify for no reason — the socket dropping is
-      // exactly when that is most likely to happen twice in a row.
+      // Nothing has come down the wire for a while, so re-opening it will not
+      // help either — and each attempt would restart the clock the outage
+      // detector reads, leaving playback churning instead of stopping. The
+      // outage is the terminal state of repeated failure, not a rival to it.
+      if (!dataArriving()) {
+        enterOutage();
+        return;
+      }
+      // A dropped video socket is otherwise a picture problem. Restarting the
+      // whole session would take the soundtrack down with it, and the car would
+      // hand the speakers back to Spotify for no reason.
       if (audioClockRunning()) {
         state.resyncedAt = 0;
         resyncPicture();
@@ -967,6 +1195,7 @@
   // it when it has wandered far enough to notice.
   function holdSync() {
     if (state.audioMode !== 'separate' || isDirect() || !state.playing) return;
+    if (state.waiting) return;
 
     // A soundtrack that has stopped on its own — the stream ended, the link
     // dropped — is already silent, so restarting it costs nothing that has not
@@ -1154,7 +1383,7 @@
 
   el.tapBtn.addEventListener('click', function () {
     el.tapStart.classList.remove('on');
-    start(0);
+    startFromResume();
   });
 
   el.playPause.addEventListener('click', togglePlay);
@@ -1416,6 +1645,16 @@
     if (el.diag.classList.contains('on')) el.diag.textContent = diagText();
     if (++driftTick % 4 === 0) holdSync();
     if (driftTick % 2 === 0) reportBuffer();
+    if (driftTick % 4 === 0) postProgress(false);
+
+    // Nothing arriving, and the buffer that was supposed to cover for that has
+    // run dry — the decoder has had no frame to give for two seconds. Until
+    // then the cushion is doing its job and playback carries on, which is the
+    // whole reason for building one.
+    if (state.playing && !state.waiting && !isDirect()
+      && !dataArriving() && Date.now() - state.lastFrameAt > 2000) {
+      enterOutage();
+    }
 
     if (!state.playing) { stuckSince = 0; return; }
 
@@ -1423,6 +1662,7 @@
     // clock instead would call the lockout healthy, since it keeps ticking.
     var now = isDirect() ? presentedFrames() : currentPosition();
     if (Math.abs(now - lastSeen) > 0.05) {
+      if (!state.waiting) state.watchedSeconds += 0.25;
       lastSeen = now;
       stuckSince = 0;
       return;
@@ -1453,8 +1693,9 @@
       else el.signedIn.textContent = 'YouTube: giriş yok';
 
       var kept = applyFeeds(health.feeds);
-      // Open on the richest list this server can actually fill.
-      if (!initial) loadFeed(kept[0] || 'trending');
+      // Open on the richest list this server can actually fill, falling through
+      // any that turn out to be empty.
+      if (!initial) loadFeed(kept[0] || 'trending', kept.slice(1));
     })
     .catch(function () { setQuality(state.quality); });
 
