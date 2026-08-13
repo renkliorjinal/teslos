@@ -4,48 +4,40 @@ A YouTube player for the Tesla centre-screen browser, plus a probe that
 measures what that browser will and will not do while the car is moving.
 
 > **Note on lawfulness.** A driver watching video while the car is moving is
-> illegal in Turkey and most other jurisdictions. Current firmware no longer
-> stops it, which changes nothing about the risk.
+> illegal in Turkey and most other jurisdictions, and Tesla's lockout exists
+> for that reason. Nothing here removes the risk it addresses.
 
 ---
 
 ## What the car actually does
 
-Older Tesla firmware paused `<video>` elements at the OS level the moment the
-car left Park, and a paused element also poisons `drawImage()`, so video frames
-could not reach a canvas either. Routing around that is what this project was
-built for.
+Tesla blocks video while the car is moving, and the block is subtler than it
+first appears: the `<video>` element is **not** paused. Its clock keeps running
+and its audio keeps playing — the car simply stops putting its frames on the
+screen. So `video.paused` stays `false` throughout and tells you nothing; the
+only honest measure is how many frames were actually presented, via
+`requestVideoFrameCallback`.
 
-**That restriction is absent on current firmware.** Measured with `/probe/` in a
-Model 3 on Chromium 140, at 104 km/h:
+Measured with `/probe/` in a Model 3 on Chromium 140, at 104 km/h:
 
 | Capability | At speed |
 |---|---|
-| `<video>` element | **keeps playing** |
+| `<video>` frames presented | **none** — clock runs, picture frozen |
+| `<video>` paused | `false` — the element is playing |
+| `drawImage(video, …)` | black, even parked |
 | `<canvas>` + WebGL | works, 60 fps |
-| WebCodecs `VideoDecoder` | works, decoded H.264 (`avc1.42C01E`) |
+| WebCodecs `VideoDecoder` | works, decoded H.264 (`avc1.42C01E`) into a canvas |
 | WebSocket, WebAssembly | work |
-| WebAudio | works, clock advancing |
-| `<audio>` element | works |
-| `drawImage(video, …)` | black — even parked |
-| Theater apps (YouTube/Netflix) | still gated to Park |
+| WebAudio, `<audio>` | work, clocks advancing |
+| Theater apps (YouTube/Netflix) | gated to Park |
 
-So before installing any of this, **open youtube.com in the car's browser and
-press play.** If that works, you do not need this project.
+The block therefore lands on the `<video>` element specifically, not on video
+data, decoding, or the screen. Anything that reaches the canvas by another
+route keeps working.
 
 ## The two transports
 
-**direct** (default) — an ordinary `<video>` element fed a remuxed MP4. The
-server copies YouTube's existing H.264 and AAC into a fragmented container
-without re-encoding:
-
-```
-YouTube ──yt-dlp──► ffmpeg -c copy ──fragmented MP4──► <video>
-```
-
-Near-zero server CPU, hardware decoding, full quality. This is what to use.
-
-**canvas** (fallback) — MPEG1 in an MPEG-TS over a WebSocket, decoded by JSMpeg
+**canvas** (default) — MPEG1 in an MPEG-TS over a WebSocket, decoded by JSMpeg
 in JavaScript and painted into a `<canvas>`:
 
 ```
@@ -54,10 +46,20 @@ YouTube ──yt-dlp──► ffmpeg ──MPEG1-TS──► WebSocket ──►
                        └────MP2 audio muxed into the same transport stream
 ```
 
-Never touches a `<video>` element, so it survives the old lockout. It costs a
-full realtime transcode per viewer and MPEG1 looks poor next to H.264, but on
-firmware that still enforces the restriction it is the only thing that works.
-The player switches to it automatically if the direct stream never starts.
+No `<video>` element exists anywhere in it, which is the entire point. It costs
+a realtime transcode per viewer and MPEG1 looks poor beside H.264, but it is
+what survives the lockout.
+
+**direct** (parked only) — an ordinary `<video>` fed a remuxed MP4, copied from
+YouTube's own H.264 and AAC without re-encoding:
+
+```
+YouTube ──yt-dlp──► ffmpeg -c copy ──fragmented MP4──► <video>
+```
+
+Near-zero server cost, hardware decoding, full quality — and a frozen picture
+the moment the car moves. Worth switching to when parked. The player counts
+presented frames and falls back to canvas on its own when they stop arriving.
 
 ### Audio on the canvas path
 
@@ -187,8 +189,10 @@ Open `https://your-host/` in the car.
    sample with the newest Drive one and says what changed.
 
 2. **`/player/`** to watch. Paste a link or search; tap the picture for
-   controls. It starts on the direct transport and drops to canvas by itself
-   if that does not play.
+   controls. It starts on the canvas transport, since that is the one that
+   survives Drive; the **Yol** chip switches to direct, which is better
+   quality but only usable parked. **Tanı** shows what the video element is
+   really doing, and opens itself when playback stalls.
 
 ### Quality presets
 
@@ -250,9 +254,13 @@ deploy/        nginx and systemd templates
   suppressed on your firmware.
 - **yt-dlp is load-bearing.** YouTube changes break it regularly; keep it
   updated.
+- **WebCodecs is available and unused.** The probe decodes H.264 through
+  `VideoDecoder` into a canvas at speed, which would beat MPEG1 badly at the
+  same bitrate and cost the server far less. Replacing the transport with it is
+  the obvious next step.
 - **WebRTC is available and unused.** `/probe/` reports `RTCPeerConnection` as
-  present on current firmware. It would be a plausible transport, but with
-  `<video>` unrestricted there is nothing left for it to solve.
+  present. Its video normally lands in a `<video>` element, so it would need
+  the same canvas treatment to be worth anything here.
 
 ## Licence
 

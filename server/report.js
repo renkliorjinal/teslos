@@ -95,6 +95,9 @@ function compare() {
     ['WebCodecs frames', (r) => r.live?.webcodecsFrames],
     ['WebCodecs codec', (r) => r.live?.webcodecsCodec],
     ['<video> paused', (r) => r.live?.videoPaused],
+    ['<video> shown frames', (r) => r.live?.videoPresentedFrames],
+    ['<video> fps', (r) => r.live?.videoFps],
+    ['<video> decoded', (r) => r.live?.videoDecodedFrames],
     ['<video> drawable', (r) => r.live?.videoDrawable],
     ['AudioContext', (r) => r.live?.audioContextState],
     ['audio clock moving', (r) => r.live?.audioClockAdvancing],
@@ -133,14 +136,15 @@ function compare() {
     return;
   }
 
-  // The headline result. If the car was genuinely moving and <video> never
-  // paused, the restriction this whole project routes around is not present on
-  // this firmware — which would make the workaround unnecessary rather than
-  // merely improvable.
-  if (driveReport.live?.videoPaused === false) {
-    console.log(`  ${GREEN}At ${driveReport.live.speedKmh} km/h <video> was still playing.${OFF}`);
-    console.log(`  ${GREEN}The Drive lockout appears to be gone on this firmware.${OFF}`);
-    console.log(`  ${DIM}Worth testing plain video playback before keeping any of the workaround.${OFF}`);
+  // The lockout leaves the element playing and stops presenting its frames, so
+  // "paused" is never the tell. Frames reaching the screen is.
+  const shownFps = driveReport.live?.videoFps;
+  if (shownFps === 0) {
+    console.log(`  ${YELLOW}At ${driveReport.live.speedKmh} km/h <video> kept its clock running but showed no frames.${OFF}`);
+    console.log(`  ${DIM}That is the Drive lockout. Anything built on a <video> element is out.${OFF}`);
+  } else if (shownFps > 0) {
+    console.log(`  ${GREEN}At ${driveReport.live.speedKmh} km/h <video> was presenting ${shownFps} frames/s.${OFF}`);
+    console.log(`  ${DIM}No lockout on this firmware — plain playback would do.${OFF}`);
   }
 
   const fps = Number(driveReport.live?.canvasFps) || 0;
@@ -233,6 +237,9 @@ line('Speed at report time', typeof live.speedKmh === 'number'
   : `${YELLOW}${live.geolocation || 'not measured'}${OFF}`);
 line('Canvas frames / fps', `${live.canvasFrames ?? '?'} @ ${live.canvasFps ?? '?'} fps`);
 line('<video> paused', live.videoPaused === undefined ? '?' : String(live.videoPaused));
+line('<video> shown frames', live.videoPresentedFrames === undefined
+  ? 'not measured'
+  : `${live.videoPresentedFrames} @ ${live.videoFps ?? '?'} fps`);
 line('<video> drawable', live.videoDrawable === undefined ? '?' : String(live.videoDrawable));
 line('WebCodecs decode', live.webcodecsSupported === false
   ? 'no VideoDecoder'
@@ -310,10 +317,10 @@ if (mbps > 0) {
 
 // The lockout only engages in Drive, so a report taken parked says nothing
 // about it either way. Saying so beats implying the question was answered.
-if (live.videoPaused === false) {
-  console.log(`  ${DIM}<video> was playing, so this report was taken parked. The Drive-mode question is still open.${OFF}`);
-} else if (live.videoPaused === true && live.videoDrawable === false) {
-  console.log(`  ${GREEN}<video> was paused and unreadable — the lockout behaved as expected.${OFF}`);
+if (live.videoLockout === true) {
+  console.log(`  ${YELLOW}<video> was playing without presenting frames — the Drive lockout was active.${OFF}`);
+} else if (live.videoLockout === false) {
+  console.log(`  ${DIM}<video> was presenting frames, so the lockout was not engaged here.${OFF}`);
 }
 
 console.log(`\n${DIM}${reports.length} report(s) stored. "npm run report -- all" to list.${OFF}\n`);

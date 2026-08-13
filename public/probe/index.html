@@ -53,9 +53,15 @@
       <video id="vid" muted loop playsinline preload="auto"></video>
       <div class="kv"><span class="k">paused</span><span class="v" id="vidPaused">—</span></div>
       <div class="kv"><span class="k">currentTime</span><span class="v" id="vidTime">—</span></div>
+      <div class="kv"><span class="k">ekrana basılan kare</span><span class="v" id="vidShown">—</span></div>
+      <div class="kv"><span class="k">kare/sn</span><span class="v" id="vidFps">—</span></div>
+      <div class="kv"><span class="k">çözülen kare</span><span class="v" id="vidDecoded">—</span></div>
       <div class="kv"><span class="k">canvas'a çizilebiliyor</span><span class="v" id="vidDraw">—</span></div>
-      <p class="hint">Beklenen: Drive'da <code>paused = true</code>'ya düşer ve
-         <code>drawImage</code> siyah verir. Kilidin kendisi budur.</p>
+      <div class="verdict" id="vidVerdict">Saat ilerlerken kare sayacı durursa kilit aktif</div>
+      <p class="hint">Kilit elementi duraklatmıyor — oynatmaya devam ettirip
+         kareleri ekrana basmayı bırakıyor. Bu yüzden <code>paused</code> hiçbir
+         zaman <code>true</code> olmaz; bakılacak yer <b>ekrana basılan kare</b>
+         sayacı.</p>
     </div>
 
     <div class="panel" style="border-color:#00779e">
@@ -336,10 +342,62 @@
       playAttempt.catch(function (err) { $('vidPaused').textContent = 'play() reddedildi: ' + err.name; });
     }
 
+    // The lockout leaves the element playing and stops putting frames on the
+    // screen, so the only honest measure is how many frames actually got
+    // presented. requestVideoFrameCallback fires once per presented frame;
+    // totalVideoFrames counts decodes, and the two disagreeing would say
+    // whether the block sits at decode or at composition.
+    var shown = 0;
+    var shownWindow = 0;
+    var lastFpsAt = performance.now();
+
+    if (typeof vid.requestVideoFrameCallback === 'function') {
+      var onFrame = function () {
+        shown++;
+        shownWindow++;
+        vid.requestVideoFrameCallback(onFrame);
+      };
+      vid.requestVideoFrameCallback(onFrame);
+    } else {
+      $('vidShown').textContent = 'rVFC yok';
+    }
+
     setInterval(function () {
       $('vidPaused').textContent = vid.paused ? 'true (duraklatıldı)' : 'false (oynuyor)';
       $('vidPaused').className = 'v ' + (vid.paused ? 'fail' : 'ok');
       $('vidTime').textContent = vid.currentTime.toFixed(2) + ' s';
+
+      var now = performance.now();
+      if (now - lastFpsAt >= 1000) {
+        var fps = Math.round((shownWindow * 1000) / (now - lastFpsAt));
+        $('vidFps').textContent = fps;
+        $('vidFps').className = 'v ' + (fps > 0 ? 'ok' : 'fail');
+        report.live.videoFps = fps;
+        shownWindow = 0;
+        lastFpsAt = now;
+
+        // Clock moving with no frames reaching the screen is the lockout.
+        var clockRunning = !vid.paused && vid.currentTime > 0.2;
+        if (clockRunning && fps === 0) {
+          $('vidVerdict').textContent = 'Saat ilerliyor, kare gelmiyor — KİLİT AKTİF';
+          $('vidVerdict').className = 'verdict fail';
+          report.live.videoLockout = true;
+        } else if (clockRunning) {
+          $('vidVerdict').textContent = 'Kareler ekrana basılıyor — kilit yok';
+          $('vidVerdict').className = 'verdict ok';
+          report.live.videoLockout = false;
+        }
+      }
+
+      $('vidShown').textContent = shown;
+      report.live.videoPresentedFrames = shown;
+
+      if (typeof vid.getVideoPlaybackQuality === 'function') {
+        var q = vid.getVideoPlaybackQuality();
+        $('vidDecoded').textContent = q.totalVideoFrames + ' (düşen ' + q.droppedVideoFrames + ')';
+        report.live.videoDecodedFrames = q.totalVideoFrames;
+        report.live.videoDroppedFrames = q.droppedVideoFrames;
+      }
 
       // Non-black pixels mean drawImage still yields real frames.
       var drawable = false;

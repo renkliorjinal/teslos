@@ -59,7 +59,11 @@
     videoId: null,
     meta: null,
     quality: 480,
-    transport: 'direct',
+    // Canvas by default. Tesla's Drive lockout leaves a <video> element playing
+    // — clock running, audio out — and simply stops putting its frames on the
+    // screen, so the direct path is dead the moment the car moves. Decoding in
+    // JavaScript and painting into a canvas is the point of this project.
+    transport: 'canvas',
     audioMode: 'muxed',
     audioNudge: 0,
     player: null,          // JSMpeg instance, canvas transport only
@@ -113,6 +117,32 @@
 
   function isDirect() {
     return state.transport === 'direct';
+  }
+
+  // Counts frames the compositor actually showed. Under the Drive lockout this
+  // stays at zero while currentTime climbs, which is the one signal that tells
+  // the two situations apart.
+  var directFrames = 0;
+
+  function watchDirectFrames() {
+    if (typeof el.video.requestVideoFrameCallback !== 'function') {
+      // Without rVFC, decoded-frame counts are the next best thing.
+      directFrames = -1;
+      return;
+    }
+    var tick = function () {
+      directFrames++;
+      if (isDirect() && state.playing) el.video.requestVideoFrameCallback(tick);
+    };
+    el.video.requestVideoFrameCallback(tick);
+  }
+
+  function presentedFrames() {
+    if (directFrames >= 0) return directFrames;
+    if (typeof el.video.getVideoPlaybackQuality === 'function') {
+      return el.video.getVideoPlaybackQuality().totalVideoFrames;
+    }
+    return -1;
   }
 
   function currentPosition() {
@@ -261,16 +291,20 @@
       if (err.name !== 'NotSupportedError') toast('Oynatma reddedildi: ' + err.name);
     });
 
-    // If the car does still pause <video> — older firmware than the one this
-    // was measured on — nothing ever advances and the screen simply sits
-    // there. Rather than leave the driver guessing, take the hint and move to
-    // the transport that was built for exactly that case.
+    // The lockout does not stop the clock, so a running currentTime proves
+    // nothing — under it the element plays happily and paints nothing. Frames
+    // reaching the screen is the only thing worth waiting for.
+    directFrames = 0;
+    watchDirectFrames();
+
     state.directWatchdog = setTimeout(function () {
       if (!state.playing || !isDirect()) return;
-      if (el.video.currentTime > 0.3) return;
-      toast('Doğrudan oynatma başlamadı — canvas yoluna geçiliyor');
+      if (directFrames > 2) return;
+      toast(el.video.currentTime > 1
+        ? 'Görüntü ekrana basılmıyor (Drive kilidi) — canvas yoluna geçiliyor'
+        : 'Doğrudan oynatma başlamadı — canvas yoluna geçiliyor');
       setTransport('canvas', true);
-    }, 12000);
+    }, 10000);
   }
 
   function startCanvas() {
@@ -707,6 +741,8 @@
         'currentTime ' + v.currentTime.toFixed(2) + 's',
         'duration    ' + (isFinite(v.duration) ? v.duration.toFixed(1) + 's' : String(v.duration)),
         'buffered    ' + bufferedRanges(),
+        // Zero here while currentTime climbs is the lockout, not a stall.
+        'shown frames' + ' ' + presentedFrames(),
         'frame size  ' + v.videoWidth + 'x' + v.videoHeight,
         'error       ' + (v.error ? (MEDIA_ERROR[v.error.code] || v.error.code) + ': ' + v.error.message : 'none'),
         'events      ' + events.join(' → ')
@@ -748,16 +784,18 @@
 
     if (!state.playing) { stuckSince = 0; return; }
 
-    var now = isDirect() ? el.video.currentTime : currentPosition();
+    // For the direct path, progress means frames on the screen. Watching the
+    // clock instead would call the lockout healthy, since it keeps ticking.
+    var now = isDirect() ? presentedFrames() : currentPosition();
     if (Math.abs(now - lastSeen) > 0.05) {
       lastSeen = now;
       stuckSince = 0;
       return;
     }
 
-    // Claiming to play while the clock has not moved for six seconds is a
-    // stall, whatever the element says. Put the numbers on screen rather than
-    // leaving a still frame and no explanation.
+    // Claiming to play while nothing has advanced for six seconds is a stall,
+    // whatever the element says. Put the numbers on screen rather than leaving
+    // a still frame and no explanation.
     if (!stuckSince) stuckSince = Date.now();
     if (Date.now() - stuckSince > 6000 && !el.diag.classList.contains('on')) {
       setStatus('takıldı');
@@ -774,7 +812,7 @@
     })
     .catch(function () { setQuality(state.quality); });
 
-  setTransport('direct', false);
+  setTransport('canvas', false);
   setAudioMode('muxed', false);
 
   var initial = new URLSearchParams(location.search).get('v');
