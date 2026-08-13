@@ -15,7 +15,11 @@ Type=simple
 User=teslos
 Group=teslos
 WorkingDirectory=/opt/teslos
-ExecStart=/usr/bin/node server/index.js
+# env rather than a hard-coded path, so copying this file into place is enough
+# on a box where node lives somewhere else. systemd gives the unit the standard
+# PATH, and ProtectHome=true rules out a node under someone's home directory
+# anyway. setup.sh still pins the absolute path when it installs.
+ExecStart=/usr/bin/env node server/index.js
 Restart=always
 RestartSec=5
 
