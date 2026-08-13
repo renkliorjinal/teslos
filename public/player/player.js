@@ -44,6 +44,8 @@
     transportBtn: $('transportBtn'),
     audioBtn: $('audioBtn'),
     libBtn: $('libBtn'),
+    diag: $('diag'),
+    diagBtn: $('diagBtn'),
     nudgeBack: $('nudgeBack'),
     nudgeFwd: $('nudgeFwd'),
     status: $('status'),
@@ -657,9 +659,111 @@
 
   window.addEventListener('beforeunload', teardown);
 
+  // ------------------------------------------------------------ diagnostics
+  //
+  // A stalled <video> looks identical from the outside whatever the cause —
+  // frozen picture, no sound — while the element itself knows exactly which
+  // stage it is stuck at. Guessing from the symptom wastes drives; readyState,
+  // networkState, the buffered ranges and the event trail name it outright.
+
+  var READY = ['HAVE_NOTHING', 'HAVE_METADATA', 'HAVE_CURRENT_DATA', 'HAVE_FUTURE_DATA', 'HAVE_ENOUGH_DATA'];
+  var NETWORK = ['EMPTY', 'IDLE', 'LOADING', 'NO_SOURCE'];
+  var MEDIA_ERROR = ['', 'ABORTED', 'NETWORK', 'DECODE', 'SRC_NOT_SUPPORTED'];
+
+  var events = [];
+  [
+    'loadstart', 'loadedmetadata', 'loadeddata', 'canplay', 'canplaythrough',
+    'play', 'playing', 'waiting', 'stalled', 'suspend', 'progress', 'error', 'ended',
+  ].forEach(function (name) {
+    el.video.addEventListener(name, function () {
+      events.push(name);
+      if (events.length > 8) events.shift();
+    });
+  });
+
+  function bufferedRanges() {
+    var b = el.video.buffered;
+    if (!b || !b.length) return 'none';
+    var out = [];
+    for (var i = 0; i < b.length; i++) {
+      out.push(b.start(i).toFixed(1) + '–' + b.end(i).toFixed(1));
+    }
+    return out.join(' ');
+  }
+
+  function diagText() {
+    var v = el.video;
+    var lines = [
+      'transport   ' + state.transport,
+      'status      ' + el.status.textContent,
+      'startOffset ' + state.startOffset.toFixed(1) + 's',
+    ];
+
+    if (isDirect()) {
+      lines.push(
+        'readyState  ' + v.readyState + ' ' + (READY[v.readyState] || '?'),
+        'network     ' + v.networkState + ' ' + (NETWORK[v.networkState] || '?'),
+        'paused      ' + v.paused,
+        'currentTime ' + v.currentTime.toFixed(2) + 's',
+        'duration    ' + (isFinite(v.duration) ? v.duration.toFixed(1) + 's' : String(v.duration)),
+        'buffered    ' + bufferedRanges(),
+        'frame size  ' + v.videoWidth + 'x' + v.videoHeight,
+        'error       ' + (v.error ? (MEDIA_ERROR[v.error.code] || v.error.code) + ': ' + v.error.message : 'none'),
+        'events      ' + events.join(' → ')
+      );
+    } else {
+      var decoded = '?';
+      try {
+        decoded = state.player ? state.player.currentTime.toFixed(2) + 's' : 'no player';
+      } catch (e) {
+        decoded = 'unavailable';
+      }
+      var socket = state.player && state.player.source && state.player.source.socket;
+      lines.push(
+        'jsmpeg time ' + decoded,
+        'socket      ' + (socket ? ['CONNECTING', 'OPEN', 'CLOSING', 'CLOSED'][socket.readyState] : 'none'),
+        'audio mode  ' + state.audioMode
+      );
+    }
+    return lines.join('\n');
+  }
+
+  function showDiag(on) {
+    el.diag.classList.toggle('on', on);
+    if (on) el.diag.textContent = diagText();
+  }
+
+  el.diagBtn.addEventListener('click', function () {
+    showDiag(!el.diag.classList.contains('on'));
+  });
+
   // -------------------------------------------------------------- main loop
 
-  setInterval(function () { paintSeek(currentPosition()); }, 250);
+  var lastSeen = -1;
+  var stuckSince = 0;
+
+  setInterval(function () {
+    paintSeek(currentPosition());
+    if (el.diag.classList.contains('on')) el.diag.textContent = diagText();
+
+    if (!state.playing) { stuckSince = 0; return; }
+
+    var now = isDirect() ? el.video.currentTime : currentPosition();
+    if (Math.abs(now - lastSeen) > 0.05) {
+      lastSeen = now;
+      stuckSince = 0;
+      return;
+    }
+
+    // Claiming to play while the clock has not moved for six seconds is a
+    // stall, whatever the element says. Put the numbers on screen rather than
+    // leaving a still frame and no explanation.
+    if (!stuckSince) stuckSince = Date.now();
+    if (Date.now() - stuckSince > 6000 && !el.diag.classList.contains('on')) {
+      setStatus('takıldı');
+      showDiag(true);
+    }
+  }, 250);
 
   // ------------------------------------------------------------------- boot
 

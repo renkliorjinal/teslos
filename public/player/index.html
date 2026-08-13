@@ -64,6 +64,13 @@
   .nudge { display: none; }
   body.canvas-transport.separate-audio .nudge { display: inline-block; }
 
+  .diag { position: absolute; top: 16px; left: 16px; z-index: 25; display: none;
+          background: rgba(4,4,9,.9); border: 1px solid var(--line); border-radius: 8px;
+          padding: 12px 14px; margin: 0; font-family: ui-monospace, Menlo, Consolas, monospace;
+          font-size: .8rem; line-height: 1.5; color: #cfe9ff; max-width: 70vw;
+          white-space: pre-wrap; }
+  .diag.on { display: block; }
+
   .toast { position: absolute; top: 20px; left: 50%; transform: translateX(-50%); z-index: 30;
            background: #2a1116; border: 1px solid #742; color: #ffb4b4; padding: 14px 20px;
            border-radius: 10px; font-size: .95rem; max-width: 80vw; display: none; }
@@ -74,6 +81,7 @@
   <canvas id="screen"></canvas>
   <video id="direct" playsinline></video>
   <div class="toast" id="toast"></div>
+  <pre class="diag" id="diag"></pre>
 
   <div class="overlay" id="overlay">
     <div class="picker">
@@ -116,6 +124,7 @@
       <button class="chip audio-only" id="audioBtn">Ses: muxed</button>
       <button class="chip nudge" id="nudgeBack">Ses −0,5s</button>
       <button class="chip nudge" id="nudgeFwd">Ses +0,5s</button>
+      <button class="chip" id="diagBtn">Tanı</button>
       <button class="chip" id="libBtn">Değiştir</button>
       <span class="status" id="status">hazır</span>
     </div>

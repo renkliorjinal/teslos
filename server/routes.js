@@ -64,6 +64,15 @@ router.get('/stream', async (req, res) => {
   const quality = config.resolveQuality(req.query.q);
   const startTime = Math.max(0, Number(req.query.t) || 0);
 
+  // Chrome asks for a byte range on every media request. This body is a live
+  // pipe with no index and no length, so a range cannot be honoured — and
+  // answering one by starting a fresh ffmpeg would hand the browser
+  // start-of-file bytes where it expected an offset, which it experiences as a
+  // frozen picture rather than an error. Saying "none" up front stops it asking.
+  if (req.headers.range) {
+    console.log(`[direct] ${videoId}: browser asked for range ${req.headers.range}; serving whole stream`);
+  }
+
   let session;
   try {
     session = await stream.startDirectStream({ videoId, quality, startTime });
@@ -73,6 +82,7 @@ router.get('/stream', async (req, res) => {
 
   res.writeHead(200, {
     'Content-Type': 'video/mp4',
+    'Accept-Ranges': 'none',
     'Cache-Control': 'no-store',
     'Connection': 'close',
   });
