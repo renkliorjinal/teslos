@@ -72,6 +72,7 @@
     transport: 'canvas',
     audioMode: 'muxed',
     audioNudge: 0,
+    audioRestartedAt: 0,
     audioBase: 0,          // absolute position the fallback audio stream began at
     player: null,          // JSMpeg instance, canvas transport only
     playing: false,
@@ -330,7 +331,9 @@
   // ------------------------------------------------------------- transport
 
   function teardown() {
-    clearTimeout(state.watchdog);
+    // An interval now, not a timeout — clearTimeout would leave it polling
+    // against a player that no longer exists.
+    clearInterval(state.watchdog);
     clearTimeout(state.resumeTimer);
     clearTimeout(state.directWatchdog);
     state.watchdog = null;
@@ -430,8 +433,10 @@
       onEnded: handleEnded
     });
 
-    // A user gesture opened this, so the context is allowed to start.
-    if (muxedAudio) unlockAudio();
+    if (muxedAudio) {
+      unlockAudio();
+      attachMeter(state.player.audioOut);
+    }
 
     watchSocket();
     if (muxedAudio) armAudioWatchdog();
@@ -504,23 +509,48 @@
   // car, which is worth distinguishing from the ones that do.
   var gestureSeen = false;
 
+  // JSMpeg's own unlock gate is iOS-only — `unlocked` is true from birth on
+  // Chromium — so it was never what kept the car silent. The AudioContext is.
+  //
+  // JSMpeg schedules every buffer at an absolute context time it accumulates
+  // itself, and a suspended context's clock does not advance. Feed one while it
+  // is suspended and that running total climbs away from the frozen present, so
+  // when the context finally starts, everything queued is booked for a moment
+  // far in the future: silence, then audio arriving late. That is the delayed
+  // sound, and it is caused before the first sample is ever decoded.
+  //
+  // So the context is created and started at the first touch anywhere on the
+  // page, well before a player exists, and handed to JSMpeg as the one it
+  // caches. Nothing is ever fed to a stopped clock.
+  function webAudioClass() {
+    return window.JSMpeg && JSMpeg.AudioOutput && JSMpeg.AudioOutput.WebAudio;
+  }
+
+  function primeAudioContext() {
+    var Ctx = window.AudioContext || window.webkitAudioContext;
+    var WebAudio = webAudioClass();
+    if (!Ctx || !WebAudio) return null;
+
+    if (!WebAudio.CachedContext) WebAudio.CachedContext = new Ctx();
+    var ctx = WebAudio.CachedContext;
+    if (ctx.state === 'suspended' && ctx.resume) ctx.resume();
+    return ctx;
+  }
+
   function unlockAudio() {
-    // JSMpeg has its own gate on top of the AudioContext, and it caches one
-    // context across every player it creates — so a context that was born
-    // suspended before the first tap is inherited by everything afterwards.
-    // Resuming without also calling unlock() leaves JSMpeg believing it is
-    // still muted.
+    var ctx = primeAudioContext();
     var out = state.player && state.player.audioOut;
-    if (out) {
-      var ctx = out.context;
-      if (ctx && ctx.state === 'suspended' && ctx.resume) ctx.resume();
-      if (typeof out.unlock === 'function' && !out.unlocked) {
-        try {
-          out.unlock(function () { /* JSMpeg flips its own flag */ });
-        } catch (e) {
-          // Older builds without the gate.
+
+    if (out && ctx && ctx.state !== 'running' && ctx.resume) {
+      // Whatever was queued while it was stopped is booked against a clock that
+      // never moved, so it would all land at once and late. Resetting drops
+      // that backlog and re-bases the schedule on the present.
+      ctx.resume().then(function () {
+        if (out === (state.player && state.player.audioOut)
+          && typeof out.resetEnqueuedTime === 'function') {
+          out.resetEnqueuedTime();
         }
-      }
+      }).catch(function () { /* nothing more to try */ });
     }
 
     if (state.audioMode === 'separate' && el.audio.getAttribute('src') && el.audio.paused) {
@@ -534,49 +564,107 @@
 
   ['pointerdown', 'click', 'touchstart', 'keydown'].forEach(function (name) {
     document.addEventListener(name, function () {
-      if (gestureSeen) return;
+      // Every gesture, not just the first: a context can be stopped again by
+      // the car — a call, another app taking the speakers — and the next touch
+      // is the cheapest chance to get it back.
       gestureSeen = true;
       unlockAudio();
-    });
+    }, true);
   });
 
-  function audioDecodedTime() {
+  // Listening to the output rather than asking about it.
+  //
+  // The obvious counter, the MP2 decoder's decodedTime, answers the wrong
+  // question. It advances whenever the decoder consumes bytes, and the decoder
+  // consumes bytes happily into a suspended AudioContext — which is exactly the
+  // case that leaves the car silent. Decoding and being audible come apart
+  // precisely where it matters, so a counter cannot tell them apart.
+  //
+  // An analyser tapped into the output is not a proxy for sound at all — it is
+  // the samples themselves, on their way to the speakers.
+  var meter = null;
+
+  function attachMeter(out) {
+    var ctx = out && out.context;
+    if (!ctx || !ctx.createAnalyser || !out.gain) return;
+
     try {
-      return (state.player && state.player.audio && state.player.audio.decodedTime) || 0;
+      // The context is shared across every player, so last time's analyser is
+      // still hanging off its destination.
+      if (meter) {
+        try {
+          meter.analyser.disconnect();
+        } catch (e) {
+          // Already torn down with its player.
+        }
+        meter = null;
+      }
+
+      var analyser = ctx.createAnalyser();
+      analyser.fftSize = 2048;
+      // Splice it in: JSMpeg wired gain straight to the speakers, so this sits
+      // between them and passes everything through untouched.
+      out.gain.disconnect();
+      out.gain.connect(analyser);
+      analyser.connect(ctx.destination);
+      meter = { analyser: analyser, samples: new Float32Array(analyser.fftSize), peak: 0 };
+    } catch (e) {
+      meter = null;
+    }
+  }
+
+  // Loudest sample seen since the last look. A quiet passage reads zero, so
+  // callers accumulate rather than judging on one glance.
+  function audioLevel() {
+    if (!meter) return 0;
+    meter.analyser.getFloatTimeDomainData(meter.samples);
+    var peak = 0;
+    for (var i = 0; i < meter.samples.length; i += 8) {
+      var v = meter.samples[i] < 0 ? -meter.samples[i] : meter.samples[i];
+      if (v > peak) peak = v;
+    }
+    if (peak > meter.peak) meter.peak = peak;
+    return peak;
+  }
+
+  function audioQueued() {
+    try {
+      var out = state.player && state.player.audioOut;
+      return (out && out.enqueuedTime) || 0;
     } catch (e) {
       return 0;
     }
   }
 
-  // Whether the muxed path is working is a question about sound coming out, not
-  // about what the AudioContext reports. Judging it on context state alone
-  // abandoned a perfectly good stream — running and unlocked — for the drifting
-  // fallback, which is the worse of the two. So watch the decoder: if it is
-  // chewing through audio, leave it alone.
+  // The watchdog no longer switches paths on its own.
+  //
+  // The separate stream is an <audio> element, and in the car that claims the
+  // media source the way Spotify or the radio would: the console flips over to
+  // the browser, and every restart — which drift correction does whenever the
+  // picture stutters — flips it again. The driver gets their music torn away
+  // and handed back on a loop. Silence is a smaller failure than that, so the
+  // switch is now only ever made deliberately, by tapping the chip.
   function armAudioWatchdog() {
-    var startedAt = audioDecodedTime();
+    if (meter) meter.peak = 0;
+    var polls = 0;
 
-    state.watchdog = setTimeout(function () {
-      unlockAudio();
+    clearInterval(state.watchdog);
+    state.watchdog = setInterval(function () {
+      audioLevel();
+      polls += 1;
+      if (polls < 12) return;                     // ~6s of looking
+      clearInterval(state.watchdog);
 
-      state.watchdog = setTimeout(function () {
-        if (audioDecodedTime() > startedAt + 0.5) return;   // audio is flowing
+      if (meter && meter.peak > 0.0005) return;   // sound is reaching the speakers
+      if (!meter && audioQueued() > 0) return;    // no analyser; queue is the best proxy
 
-        var out = state.player && state.player.audioOut;
-        var ctx = out && out.context;
-        if (ctx && ctx.state === 'running' && audioDecodedTime() > 0) return;
-
-        // Without a gesture nothing will play on any path, so switching would
-        // swap one silence for another.
-        if (!gestureSeen) {
-          toast('Ses için ekrana bir kez dokun');
-          return;
-        }
-
-        toast('Ses çözülmüyor — ayrı ses akışına geçiliyor');
-        setAudioMode('separate', true);
-      }, 6000);
-    }, 4000);
+      var ctx = state.player && state.player.audioOut && state.player.audioOut.context;
+      if (!gestureSeen || (ctx && ctx.state !== 'running')) {
+        toast('Ses için ekrana bir kez dokun');
+        return;
+      }
+      toast('Ses gelmiyor — çubuktaki "ayrı" seçeneği araç medyasını devralır');
+    }, 500);
   }
 
   function fallbackAudioUrl(offset) {
@@ -609,6 +697,7 @@
   }
 
   function startFallbackAudio() {
+    state.audioRestartedAt = Date.now();
     state.audioBase = Math.max(0, state.startOffset - state.audioNudge);
     var url = fallbackAudioUrl(state.audioBase);
     el.audio.src = url;
@@ -637,7 +726,13 @@
     var drift = videoAt - audioAt;
     state.audioDrift = drift;
 
-    if (Math.abs(drift) > 4) {
+    // Restarting is not free here: a fresh <audio> src grabs the car's media
+    // source again, so the console flips to the browser every time. On a
+    // stuttering picture the drift threshold is met constantly, and the driver
+    // watches their music get taken and handed back on a loop. Rate correction
+    // closes most gaps on its own; a restart waits out a cooldown first.
+    if (Math.abs(drift) > 4 && Date.now() - state.audioRestartedAt > 25000) {
+      state.audioRestartedAt = Date.now();
       startFallbackAudio();
       return;
     }
@@ -650,6 +745,11 @@
   }
 
   function setAudioMode(mode, restart) {
+    // Said once, when it is chosen, because the symptom — the console jumping
+    // to the browser and back — looks like a fault rather than a consequence.
+    if (mode === 'separate' && state.audioMode !== 'separate') {
+      toast('Ayrı ses aracın medya kaynağını devralır; radyo/Spotify duraklar');
+    }
     state.audioMode = mode;
     el.audioMuxed.classList.toggle('live', mode === 'muxed');
     el.audioSep.classList.toggle('live', mode === 'separate');
@@ -1011,11 +1111,13 @@
         'audio mode  ' + state.audioMode,
         'audio ctx   ' + (out && out.context ? out.context.state : 'none')
           + (out ? (out.unlocked ? ' unlocked' : ' LOCKED') : ''),
-        // Silence with a running context means nothing is being decoded into
-        // it, which is a different problem from a muted output.
-        'audio dec   ' + (state.player && state.player.audio
-          ? (state.player.audio.decodedTime || 0).toFixed(2) + 's'
-          : 'no decoder'),
+        // The only line here that reports sound rather than intent: it is
+        // measured off the samples on their way to the speakers. decodedTime is
+        // deliberately absent — JSMpeg leaves it at zero on a live stream, so
+        // reading it says nothing at all.
+        'audio level ' + (meter
+          ? audioLevel().toFixed(4) + ' (peak ' + meter.peak.toFixed(4) + ')'
+          : 'no meter'),
         'audio queued' + ' ' + (out && out.enqueuedTime !== undefined
           ? out.enqueuedTime.toFixed(2) + 's' : '—'),
         'audio elem  ' + (el.audio.paused ? 'paused' : 'playing at ' + el.audio.currentTime.toFixed(1) + 's')
