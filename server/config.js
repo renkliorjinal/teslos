@@ -74,7 +74,15 @@ module.exports = {
   bind: process.env.BIND || '127.0.0.1',
   ytDlp: process.env.YT_DLP || 'yt-dlp',
   ffmpeg: process.env.FFMPEG || 'ffmpeg',
-  cookies: process.env.YT_DLP_COOKIES || '',
+  // Checked on every call rather than read once, so uploading a jar through
+  // /setup/ takes effect without a restart.
+  cookiesPath: process.env.YT_DLP_COOKIES || path.join(__dirname, '..', 'cookies.txt'),
+  get cookies() {
+    return fs.existsSync(this.cookiesPath) ? this.cookiesPath : '';
+  },
+  // The upload endpoint writes a credential to disk on a public host, so it
+  // stays off entirely unless a token has been set.
+  setupToken: process.env.SETUP_TOKEN || '',
   proxy,
   proxyUsableByFfmpeg,
   // YouTube ties a media URL to the address that asked for it, so by default

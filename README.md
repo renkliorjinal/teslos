@@ -163,10 +163,16 @@ first:
    bridge; `npm run doctor` says so plainly rather than letting playback fail
    later.
 
-3. **Cookies.** Export them from a logged-in browser in Netscape format and
-   point `YT_DLP_COOKIES` at the file. Treat it as a credential — it is an
-   active session for that account. `chmod 600`, and note it is already in
-   `.gitignore`.
+3. **Cookies.** The sturdiest, and the only one that also opens age-restricted
+   and members-only videos. Export them from a logged-in browser in Netscape
+   format and paste them into **`/setup/`**, which writes the jar owner-only
+   and takes effect without a restart — no SSH needed. That page is off unless
+   `SETUP_TOKEN` is set, since it writes a live credential on a public host;
+   `deploy/setup.sh` mints a token and prints it.
+
+   Export from a **private window** and close it without signing out: signing
+   out ends the session and invalidates the jar. Treat the file as a
+   credential — it is an active session for that account.
 
 None of this applies to the car itself, which reaches YouTube from a mobile
 address and is not challenged.
@@ -175,7 +181,8 @@ address and is not challenged.
 
 ## Use
 
-Open `https://your-host/` in the car.
+Open `https://your-host/` in the car — that is the player. `/probe/` measures
+what the firmware allows; `/setup/` takes a YouTube cookie jar.
 
 1. **`/probe/`** first, to find out what this particular firmware allows.
    Allow the location prompt — GPS speed is how a sample is labelled Park or

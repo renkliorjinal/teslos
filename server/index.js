@@ -2,6 +2,7 @@
 
 const http = require('http');
 const url = require('url');
+const path = require('path');
 const express = require('express');
 const { WebSocketServer } = require('ws');
 
@@ -13,6 +14,13 @@ const stream = require('./stream');
 const app = express();
 
 app.disable('x-powered-by');
+
+// The player is the point of the site, and typing a path on a car touchscreen
+// is a chore. The bare hostname opens it.
+app.get('/', (req, res) => {
+  res.sendFile(path.join(config.publicDir, 'player', 'index.html'));
+});
+
 app.use(express.static(config.publicDir, { extensions: ['html'] }));
 app.use('/api', routes);
 

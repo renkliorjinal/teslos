@@ -188,6 +188,116 @@ function pipeFfmpeg(res, args, contentType) {
   });
 }
 
+// ---------------------------------------------------------------- cookies
+//
+// Signing in to YouTube means putting a cookie jar on the server, and the only
+// way to produce one is a browser extension on a real computer. Getting the
+// file across then needs SSH, which is a poor thing to require from a car. This
+// accepts a paste instead.
+//
+// It writes a live credential to disk on a public host, so it is off unless
+// SETUP_TOKEN is set, and it never reads anything back out.
+
+function tokenOk(req) {
+  if (!config.setupToken) return false;
+  const given = req.get('x-setup-token') || '';
+  return given.length === config.setupToken.length && given === config.setupToken;
+}
+
+function requireToken(req, res) {
+  if (!config.setupToken) {
+    fail(res, 503, 'SETUP_TOKEN tanımlı değil; çerez yükleme kapalı');
+    return false;
+  }
+  if (!tokenOk(req)) {
+    fail(res, 401, 'Kurulum anahtarı hatalı');
+    return false;
+  }
+  return true;
+}
+
+// Reports on the jar without disclosing it: how many cookies, for which
+// domains, and when the earliest one lapses.
+function describeCookies() {
+  if (!fs.existsSync(config.cookiesPath)) return { present: false };
+
+  const lines = fs.readFileSync(config.cookiesPath, 'utf8').split('\n');
+  const domains = new Set();
+  let count = 0;
+  let soonest = Infinity;
+
+  for (const line of lines) {
+    if (!line.trim() || (line.startsWith('#') && !line.startsWith('#HttpOnly_'))) continue;
+    const parts = line.split('\t');
+    if (parts.length < 7) continue;
+    count += 1;
+    domains.add(parts[0].replace(/^#HttpOnly_/, ''));
+    const expiry = Number(parts[4]);
+    // Zero means a session cookie, which never lapses on a clock.
+    if (expiry > 0 && expiry < soonest) soonest = expiry;
+  }
+
+  return {
+    present: true,
+    count,
+    domains: [...domains].slice(0, 8),
+    expiresAt: isFinite(soonest) ? new Date(soonest * 1000).toISOString() : null,
+    path: config.cookiesPath,
+  };
+}
+
+router.get('/cookies', (req, res) => {
+  if (!requireToken(req, res)) return;
+  res.json({ ok: true, ...describeCookies() });
+});
+
+router.post('/cookies', express.text({ limit: '512kb', type: '*/*' }), (req, res) => {
+  if (!requireToken(req, res)) return;
+
+  const body = String(req.body || '').replace(/\r\n/g, '\n').trim();
+  if (!body) return fail(res, 400, 'Boş içerik');
+
+  const rows = body.split('\n').filter((line) => {
+    if (!line.trim()) return false;
+    if (line.startsWith('#') && !line.startsWith('#HttpOnly_')) return false;
+    return line.split('\t').length >= 7;
+  });
+
+  if (!rows.length) {
+    return fail(res, 400,
+      'Netscape biçiminde satır bulunamadı. Alanlar TAB ile ayrılmalı — '
+      + 'kopyalarken sekmeler boşluğa dönmüş olabilir.');
+  }
+  if (!rows.some((line) => /youtube\.com|google\.com/i.test(line.split('\t')[0]))) {
+    return fail(res, 400, 'Dosyada youtube.com çerezi yok; yanlış site dışa aktarılmış olabilir.');
+  }
+
+  // yt-dlp insists on the header line; exporters do not always include it.
+  const header = '# Netscape HTTP Cookie File';
+  const content = (body.startsWith('#') ? body : header + '\n' + body) + '\n';
+
+  try {
+    fs.writeFileSync(config.cookiesPath, content, { mode: 0o600 });
+    fs.chmodSync(config.cookiesPath, 0o600);
+  } catch (err) {
+    return fail(res, 500, 'Yazılamadı: ' + err.message);
+  }
+
+  console.log(`[cookies] jar saved with ${rows.length} cookies`);
+  res.json({ ok: true, ...describeCookies() });
+});
+
+router.delete('/cookies', (req, res) => {
+  if (!requireToken(req, res)) return;
+  try {
+    if (fs.existsSync(config.cookiesPath)) fs.unlinkSync(config.cookiesPath);
+  } catch (err) {
+    return fail(res, 500, err.message);
+  }
+  console.log('[cookies] jar removed');
+  res.json({ ok: true, present: false });
+});
+
 router.post('/probe-report', express.json({ limit: '512kb' }), (req, res) => {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   fs.mkdirSync(config.reportsDir, { recursive: true });

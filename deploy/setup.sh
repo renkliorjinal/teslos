@@ -95,6 +95,13 @@ fi
 cd "$APP_DIR"
 npm install --omit=dev --no-audit --no-fund
 [[ -f .env ]] || cp .env.example .env
+
+# The cookie upload page is useless without a token and unsafe as an open
+# endpoint, so mint one rather than leaving the choice to be forgotten.
+if ! grep -q '^SETUP_TOKEN=' .env; then
+  printf 'SETUP_TOKEN=%s\n' "$(head -c 18 /dev/urandom | base64 | tr -d '/+=')" >> .env
+fi
+SETUP_TOKEN_VALUE="$(grep '^SETUP_TOKEN=' .env | tail -1 | cut -d= -f2-)"
 mkdir -p probe-reports
 chown -R "$APP_USER:$APP_USER" "$APP_DIR"
 
@@ -215,8 +222,10 @@ cat <<DONE
 
   Open on the car's screen:  https://$DOMAIN/
 
-  1. /probe/   run it parked, then keep the tab open while driving
-  2. /player/  paste a YouTube link
+  The player is on the bare hostname. /probe/ measures what this firmware
+  allows; /setup/ takes a pasted YouTube cookie jar.
+
+  Setup token:  $SETUP_TOKEN_VALUE
 
   Logs:     journalctl -u teslos -f
   Restart:  systemctl restart teslos

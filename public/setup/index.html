@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>teslos · kurulum</title>
+<link rel="icon" href="/favicon.svg">
+<link rel="stylesheet" href="/shared/style.css">
+<style>
+  textarea { width: 100%; min-height: 220px; padding: 12px; border-radius: 10px;
+             border: 1px solid var(--line); background: #0b0b14; color: var(--text);
+             font-family: ui-monospace, Menlo, Consolas, monospace; font-size: .78rem; }
+  ol { line-height: 1.75; padding-left: 22px; }
+  code { background: #0b0b14; padding: 2px 6px; border-radius: 4px; font-size: .88em; }
+  .state { padding: 12px; border-radius: 8px; background: #0b0b14; margin-top: 10px; font-size: .9rem; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>teslos · YouTube girişi</h1>
+  <p class="sub">Sunucunun YouTube'a giriş yapmış gibi davranması için çerez dosyası</p>
+
+  <div class="panel">
+    <h2 style="font-size:1rem;margin:0 0 10px">Neden gerekiyor</h2>
+    <p class="muted" style="margin:0;font-size:.9rem;line-height:1.6">
+      YouTube veri merkezi adreslerini bot sanıyor. Proxy bunu şimdilik aşıyor ama
+      proxy'nin çıkışı da işaretlenirse her şey durur. Çerez, sunucuyu giriş yapmış
+      bir tarayıcı gibi gösterdiği için en sağlam yol — yaş kısıtlı videolar ve
+      üyelik içerikleri de böyle açılır.
+    </p>
+  </div>
+
+  <div class="panel">
+    <h2 style="font-size:1rem;margin:0 0 10px">Dosyayı nasıl çıkarırsın</h2>
+    <ol class="muted" style="font-size:.9rem;margin:0">
+      <li>Bilgisayarda tarayıcıda <b>gizli pencere</b> aç ve YouTube'a giriş yap.</li>
+      <li><b>Get cookies.txt LOCALLY</b> eklentisiyle <code>youtube.com</code> çerezlerini
+          Netscape biçiminde dışa aktar.</li>
+      <li>Dosyanın içeriğini aşağıya yapıştır.</li>
+      <li>Sekmeyi <b>çıkış yapmadan kapat</b> — çıkış yapmak çerezi geçersiz kılar.</li>
+    </ol>
+    <p class="muted" style="font-size:.82rem;margin-top:12px;line-height:1.6">
+      Gizli pencere kullanmanın sebebi: o oturum başka hiçbir yerde sonlandırılmaz,
+      yani normal tarayıcında çıkış yapman bu çerezi bozmaz.
+    </p>
+  </div>
+
+  <div class="panel">
+    <div class="row">
+      <input class="input" id="token" type="password" placeholder="Kurulum anahtarı (SETUP_TOKEN)"
+             autocomplete="off" style="flex:1;min-width:240px">
+      <button class="btn" id="check">DURUMU GÖR</button>
+    </div>
+    <div class="state" id="state">—</div>
+  </div>
+
+  <div class="panel">
+    <textarea id="jar" placeholder="# Netscape HTTP Cookie File&#10;.youtube.com	TRUE	/	TRUE	1799999999	SID	..."
+              spellcheck="false" autocapitalize="off"></textarea>
+    <div class="row" style="margin-top:10px">
+      <button class="btn primary" id="save" style="flex:1">KAYDET</button>
+      <button class="btn" id="drop">SİL</button>
+    </div>
+    <p class="muted" style="font-size:.82rem;margin-top:12px;line-height:1.6">
+      Alanlar TAB ile ayrılmalı. Bazı uygulamalar yapıştırırken sekmeleri boşluğa
+      çevirir; öyle olursa kaydetme reddedilir ve sebebini söyler. Dosya sunucuda
+      yalnızca sahibinin okuyabileceği izinle saklanır ve buradan bir daha
+      görüntülenemez.
+    </p>
+  </div>
+
+  <p class="muted" style="font-size:.85rem">
+    <a href="/">← oynatıcı</a> · <a href="/probe/">probe</a>
+  </p>
+</div>
+
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+
+  // Kept in the tab only, so a shared screen does not leak it later.
+  function token() { return $('token').value.trim(); }
+
+  function show(text, cls) {
+    $('state').textContent = text;
+    $('state').className = 'state ' + (cls || '');
+  }
+
+  function describe(data) {
+    if (!data.present) return 'Çerez yok — sunucu giriş yapmamış durumda.';
+    var when = data.expiresAt ? new Date(data.expiresAt).toLocaleString('tr-TR') : 'oturum çerezi';
+    return data.count + ' çerez · ' + data.domains.join(', ') + '\nİlk geçersizlik: ' + when;
+  }
+
+  function call(method, body) {
+    if (!token()) { show('Önce kurulum anahtarını gir.', 'warn'); return Promise.resolve(); }
+    return fetch('/api/cookies', {
+      method: method,
+      headers: { 'x-setup-token': token(), 'Content-Type': 'text/plain' },
+      body: body
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (!data.ok) { show(data.error, 'fail'); return; }
+        show(describe(data), data.present ? 'ok' : 'warn');
+      })
+      .catch(function (err) { show('Hata: ' + err.message, 'fail'); });
+  }
+
+  $('check').addEventListener('click', function () { call('GET'); });
+  $('save').addEventListener('click', function () {
+    var text = $('jar').value;
+    if (!text.trim()) { show('Yapıştırılacak bir şey yok.', 'warn'); return; }
+    call('POST', text).then(function () { $('jar').value = ''; });
+  });
+  $('drop').addEventListener('click', function () { call('DELETE'); });
+})();
+</script>
+</body>
+</html>

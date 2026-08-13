@@ -64,6 +64,19 @@
   .nudge { display: none; }
   body.canvas-transport.separate-audio .nudge { display: inline-block; }
 
+  /* Arriving by link means no user gesture has happened, and no browser will
+     let audio out until one has. Asking for the tap up front beats starting
+     silently and explaining afterwards. */
+  .tapstart { position: absolute; inset: 0; z-index: 22; display: none;
+              flex-direction: column; align-items: center; justify-content: center;
+              gap: 18px; background: rgba(5,5,10,.9); text-align: center; padding: 20px; }
+  .tapstart.on { display: flex; }
+  .tapbtn { width: 132px; height: 132px; border-radius: 50%; border: none;
+            background: #00506b; color: #fff; font-size: 3.2rem; cursor: pointer; }
+  .tapbtn:active { opacity: .6; }
+  .taptitle { font-size: 1.15rem; font-weight: 600; max-width: 80%; }
+  .taphint { color: var(--muted); font-size: .92rem; }
+
   .diag { position: absolute; top: 16px; left: 16px; z-index: 25; display: none;
           background: rgba(4,4,9,.9); border: 1px solid var(--line); border-radius: 8px;
           padding: 12px 14px; margin: 0; font-family: ui-monospace, Menlo, Consolas, monospace;
@@ -82,6 +95,12 @@
   <video id="direct" playsinline></video>
   <div class="toast" id="toast"></div>
   <pre class="diag" id="diag"></pre>
+
+  <div class="tapstart" id="tapStart">
+    <button class="tapbtn" id="tapBtn">▶</button>
+    <div class="taptitle" id="tapTitle"></div>
+    <div class="taphint">Sesin çalışması için oynatmayı dokunarak başlatman gerekiyor</div>
+  </div>
 
   <div class="overlay" id="overlay">
     <div class="picker">
@@ -106,7 +125,8 @@
       <div class="results" id="results"></div>
 
       <p class="muted" style="font-size:.82rem;line-height:1.6;margin-top:18px">
-        Bağlantı hızını bilmiyorsan önce <a href="/probe/">probe</a> sayfasındaki hız testini çalıştır.
+        Bağlantı hızını bilmiyorsan <a href="/probe/">probe</a> sayfasındaki hız testini çalıştır.
+        YouTube girişi için <a href="/setup/">kurulum</a>.
       </p>
     </div>
   </div>

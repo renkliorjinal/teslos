@@ -3,20 +3,17 @@
 /**
  * Tesla-side player, with two transports.
  *
- * direct — an ordinary <video> fed a remuxed MP4. The server copies YouTube's
- *   existing H.264 into a container without re-encoding, so the car decodes in
- *   hardware at full quality and the server does almost no work.
+ * canvas (default) — MPEG1 in an MPEG-TS over a WebSocket, decoded by JSMpeg in
+ *   JavaScript and painted into a <canvas>. No <video> element appears anywhere
+ *   in it, which is the whole point: Tesla stops presenting a <video>'s frames
+ *   once the car moves, leaving the element playing — clock running, audio out
+ *   — behind a frozen picture. Confirmed at 104 km/h.
  *
- * canvas — MPEG1 in an MPEG-TS over a WebSocket, decoded by JSMpeg in
- *   JavaScript and painted into a <canvas>. Uglier, heavier at both ends, and
- *   originally the only option: firmware used to pause <video> elements at the
- *   OS level once the car left Park, and a paused element also poisons
- *   drawImage(), so pixels had to reach the page without touching one.
- *
- * Measured at 104 km/h on Chromium 140 firmware, <video> keeps playing, so
- * direct is the default. The canvas path stays because that lockout may still
- * exist on older firmware, and the player falls back to it on its own if the
- * video element never starts advancing.
+ * direct — an ordinary <video> fed a remuxed MP4, copied from YouTube's own
+ *   H.264 without re-encoding. Hardware decoding, full quality, almost no
+ *   server cost, and useless the moment the car moves. Worth switching to when
+ *   parked; the player counts presented frames and returns to canvas by itself
+ *   when they stop arriving.
  *
  * Seeking is a server-side operation on both paths: a piped fragmented MP4
  * carries no index and a live socket has no buffer to scrub, so a seek past
@@ -44,6 +41,9 @@
     transportBtn: $('transportBtn'),
     audioBtn: $('audioBtn'),
     libBtn: $('libBtn'),
+    tapStart: $('tapStart'),
+    tapBtn: $('tapBtn'),
+    tapTitle: $('tapTitle'),
     diag: $('diag'),
     diagBtn: $('diagBtn'),
     nudgeBack: $('nudgeBack'),
@@ -169,7 +169,8 @@
 
   // ---------------------------------------------------------------- loading
 
-  function loadInput(raw) {
+  function loadInput(raw, autostart) {
+    if (autostart === undefined) autostart = true;
     var value = String(raw || '').trim();
     if (!value) return;
 
@@ -180,7 +181,7 @@
       .then(function (r) { return r.json(); })
       .then(function (data) {
         if (data.ok) {
-          openVideo(data);
+          openVideo(data, autostart);
           return null;
         }
         // Not a recognisable link, so treat what was typed as a search.
@@ -226,13 +227,22 @@
     });
   }
 
-  function openVideo(meta) {
+  function openVideo(meta, autostart) {
     state.videoId = meta.videoId;
     state.meta = meta;
     el.title.textContent = meta.title;
     el.overlay.classList.add('hidden');
     el.bar.classList.remove('dim');
     history.replaceState(null, '', '?v=' + meta.videoId);
+
+    if (autostart === false) {
+      // No gesture has happened yet, so starting now would play silently and
+      // there would be no way to fix it after the fact.
+      el.tapTitle.textContent = meta.title;
+      el.tapStart.classList.add('on');
+      setStatus('başlatmak için dokun');
+      return;
+    }
     start(0);
   }
 
@@ -590,6 +600,11 @@
     chip.addEventListener('click', function () { setQuality(Number(chip.dataset.q)); });
   });
 
+  el.tapBtn.addEventListener('click', function () {
+    el.tapStart.classList.remove('on');
+    start(0);
+  });
+
   el.playPause.addEventListener('click', togglePlay);
 
   el.qualityBtn.addEventListener('click', function () {
@@ -855,6 +870,8 @@
   var initial = new URLSearchParams(location.search).get('v');
   if (initial) {
     el.query.value = initial;
-    loadInput(initial);
+    // Reached by link, so no gesture has happened: prepare everything and wait
+    // for the tap rather than starting muted.
+    loadInput(initial, false);
   }
 })();
