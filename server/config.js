@@ -43,7 +43,11 @@ function loadEnvFile(file) {
   }
 }
 
+// setup.sh already recorded the hostname here, so the doctor can print a real
+// setup link instead of a placeholder without anyone editing .env by hand.
+// Loaded first, so .env and the real environment both still win over it.
 loadEnvFile(path.join(__dirname, '..', '.env'));
+loadEnvFile('/etc/default/teslos-setup');
 
 // Quality presets. MPEG1 has no modern rate-distortion tricks, so bitrates run
 // higher than an H.264 equivalent would at the same resolution.
