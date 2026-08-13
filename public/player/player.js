@@ -70,6 +70,7 @@
     transport: 'canvas',
     audioMode: 'muxed',
     audioNudge: 0,
+    audioBase: 0,          // absolute position the fallback audio stream began at
     player: null,          // JSMpeg instance, canvas transport only
     playing: false,
     startOffset: 0,        // absolute position the current stream started at
@@ -588,12 +589,44 @@
   }
 
   function startFallbackAudio() {
-    var url = fallbackAudioUrl(state.startOffset + state.audioNudge);
+    state.audioBase = Math.max(0, state.startOffset - state.audioNudge);
+    var url = fallbackAudioUrl(state.audioBase);
     el.audio.src = url;
+    el.audio.playbackRate = 1;
     el.audio.play().catch(function (err) {
+      // AbortError only means this play() was superseded by the next one —
+      // a seek or a restart — which is not something to report.
+      if (err.name === 'AbortError') return;
       if (err.name === 'NotSupportedError') explainMediaFailure(url, 'Ses akışı oynatılamadı');
       else toast('Ses başlatılamadı: ' + err.name);
     });
+  }
+
+  // The fallback runs as its own stream with its own clock, so it drifts from
+  // the picture — and manual nudge buttons are no way to hold sync while
+  // driving. Small errors are absorbed by playing fractionally fast or slow,
+  // which is inaudible; only a gap too large to close that way restarts it.
+  function correctAudioDrift() {
+    if (state.audioMode !== 'separate' || isDirect()) return;
+    if (!state.playing || el.audio.paused || !el.audio.currentTime) return;
+
+    // audioNudge is a deliberate offset the driver asked for; the correction
+    // holds that, rather than dragging it back to zero and fighting them.
+    var videoAt = currentPosition() - state.audioNudge;
+    var audioAt = state.audioBase + el.audio.currentTime;
+    var drift = videoAt - audioAt;
+    state.audioDrift = drift;
+
+    if (Math.abs(drift) > 4) {
+      startFallbackAudio();
+      return;
+    }
+    if (Math.abs(drift) < 0.15) {
+      el.audio.playbackRate = 1;
+      return;
+    }
+    // Positive drift means the audio is behind, so let it run a little faster.
+    el.audio.playbackRate = drift > 0 ? 1.04 : 0.96;
   }
 
   function setAudioMode(mode, restart) {
@@ -603,14 +636,12 @@
     if (restart && state.videoId) start(currentPosition());
   }
 
+  // Sync is corrected automatically, so this only moves the point it aims at —
+  // for when the automatic result is right by the clock but wrong by ear.
   function nudgeAudio(delta) {
     if (state.audioMode !== 'separate' || isDirect()) return;
     state.audioNudge += delta;
     setStatus('ses kaydırma: ' + state.audioNudge.toFixed(1) + ' sn');
-    // Only the audio stream restarts; the video keeps rolling untouched.
-    var elapsed = (performance.now() - state.streamStartedAt) / 1000;
-    el.audio.src = fallbackAudioUrl(state.startOffset + elapsed + state.audioNudge);
-    el.audio.play().catch(function () { /* the toast above already covers this */ });
   }
 
   // --------------------------------------------------------------- controls
@@ -952,10 +983,16 @@
         decoded = 'unavailable';
       }
       var socket = state.player && state.player.source && state.player.source.socket;
+      var out = state.player && state.player.audioOut;
       lines.push(
         'jsmpeg time ' + decoded,
         'socket      ' + (socket ? ['CONNECTING', 'OPEN', 'CLOSING', 'CLOSED'][socket.readyState] : 'none'),
-        'audio mode  ' + state.audioMode
+        'audio mode  ' + state.audioMode,
+        'audio ctx   ' + (out && out.context ? out.context.state : 'none')
+          + (out ? (out.unlocked ? ' unlocked' : ' LOCKED') : ''),
+        'audio elem  ' + (el.audio.paused ? 'paused' : 'playing at ' + el.audio.currentTime.toFixed(1) + 's')
+          + ' x' + el.audio.playbackRate.toFixed(2),
+        'audio drift ' + (state.audioDrift === undefined ? '—' : state.audioDrift.toFixed(2) + 's')
       );
     }
     return lines.join('\n');
@@ -975,9 +1012,11 @@
   var lastSeen = -1;
   var stuckSince = 0;
 
+  var driftTick = 0;
   setInterval(function () {
     paintSeek(currentPosition());
     if (el.diag.classList.contains('on')) el.diag.textContent = diagText();
+    if (++driftTick % 4 === 0) correctAudioDrift();
 
     if (!state.playing) { stuckSince = 0; return; }
 
