@@ -20,7 +20,10 @@ const youtube = require('./youtube');
 // -readrate arrived in ffmpeg 5.1 and -readrate_initial_burst in 6.1, and the
 // droplet's build is not ours to choose, so both are probed once rather than
 // assumed.
-const READ_RATE = process.env.READ_RATE || '1.15';
+// Both ends cap how far ahead this may get — the client reports its buffer and
+// the server watches its own lead — so the rate can be high enough to refill a
+// stall quickly rather than over the following minute.
+const READ_RATE = process.env.READ_RATE || '1.5';
 const INITIAL_BURST = process.env.READ_BURST || '8';
 
 let pacing = null;

@@ -22,6 +22,10 @@ router.get('/health', (req, res) => {
     maxSessions: config.maxSessions,
     defaultQuality: config.DEFAULT_QUALITY,
     qualities: Object.keys(config.QUALITY).map(Number),
+    // The client needs these to turn bytes received into seconds buffered,
+    // which is what it reports back for flow control.
+    bitrates: Object.fromEntries(Object.entries(config.QUALITY)
+      .map(([height, preset]) => [height, parseInt(preset.videoBitrate, 10) * 1000])),
     ytClient: youtube.activeClient(),
     cookies: Boolean(config.cookies),
     google: oauth.signedIn(),

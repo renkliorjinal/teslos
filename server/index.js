@@ -116,27 +116,107 @@ wss.on('connection', async (ws, req) => {
   // Backpressure by pausing the source, not by discarding from the middle of
   // it. A transport stream with a hole in it does not resynchronise cleanly —
   // the decoder carries the damage to the next intra frame — and on a jittery
-  // link that is a permanent stutter rather than a brief glitch. ffmpeg is
-  // pacing at 1x anyway, so a short pause costs nothing but a moment of buffer.
+  // link that is a permanent stutter rather than a brief glitch.
+  //
+  // Two things can ask for a pause, and both are necessary.
+  //
+  // The socket queue is the obvious one: the link cannot take it. The client's
+  // own buffer is the one that is easy to miss. ffmpeg deliberately sends faster
+  // than real time so a cushion exists to absorb hiccups, but the client only
+  // consumes at 1x — its decoder is paced by the soundtrack. That surplus has to
+  // stop somewhere, and left alone it accumulates until the decoder's ring
+  // buffer overflows, at which point it evicts frames it has not shown yet. The
+  // picture then silently jumps ahead of the sound, which looks like the audio
+  // being late rather than like the buffer overrunning.
+  //
+  // So the client reports how many seconds it is holding, and the server stops
+  // sending once that is comfortable. The over-rate then only applies while
+  // there is room for it.
   const HIGH_WATER = 2 * 1024 * 1024;
   const LOW_WATER = 512 * 1024;
-  let drainTimer = null;
+  const BUFFER_FULL_S = 12;
+  const BUFFER_HUNGRY_S = 6;
+  // The decoder's ring buffer as a fraction of capacity, which is the quantity
+  // that actually decides whether frames get evicted. Preferred over the
+  // seconds estimate whenever the client can produce it, since it needs no
+  // agreement about what the bitrate is.
+  const RING_FULL = 0.6;
+  const RING_HUNGRY = 0.35;
+  // A second, independent ceiling, measured from this end alone: how far the
+  // bytes written have run ahead of the wall clock. The client's report is the
+  // better signal when it arrives, but a page cached from before it existed
+  // never sends one, and being wrong about that means overrunning its buffer.
+  const LEAD_CAP_S = 18;
+  const LEAD_RESUME_S = 12;
+
+  const preset = config.QUALITY[quality] || config.QUALITY[config.DEFAULT_QUALITY];
+  const byteRate = ((parseInt(preset.videoBitrate, 10) * 1000)
+    + (withAudio ? 128000 : 0)) * 1.06 / 8;
+  const startedAt = Date.now();
+  let sentBytes = 0;
+
+  const lead = () => (sentBytes / byteRate) - ((Date.now() - startedAt) / 1000);
+
+  let clientBuffer = 0;
+  let clientBufferAt = 0;
+  let clientFill = -1;
+  let clientFillAt = 0;
+  let holdTimer = null;
+
+  // A report that has stopped arriving cannot be acted on. A page from before
+  // this existed never sends one at all, and a live one that has crashed or been
+  // backgrounded is no better informed — either way, holding the stream shut on
+  // a stale number would stall playback with no way out.
+  const reportedBuffer = () =>
+    (Date.now() - clientBufferAt < 4000 ? clientBuffer : 0);
+  const reportedFill = () =>
+    (Date.now() - clientFillAt < 4000 ? clientFill : -1);
+
+  // The video socket is binary in one direction only; anything the client sends
+  // is control, and anything unparseable is ignored rather than trusted.
+  ws.on('message', (data, isBinary) => {
+    if (isBinary) return;
+    let msg;
+    try {
+      msg = JSON.parse(data.toString());
+    } catch {
+      return;
+    }
+    if (msg && typeof msg.buf === 'number' && isFinite(msg.buf)) {
+      clientBuffer = Math.max(0, msg.buf);
+      clientBufferAt = Date.now();
+    }
+    if (msg && typeof msg.fill === 'number' && isFinite(msg.fill)) {
+      clientFill = Math.min(1, Math.max(0, msg.fill));
+      clientFillAt = Date.now();
+    }
+  });
+
+  const shouldHold = () => ws.bufferedAmount > HIGH_WATER
+    || reportedFill() > RING_FULL
+    || reportedBuffer() > BUFFER_FULL_S
+    || lead() > LEAD_CAP_S;
+  const mayResume = () => ws.bufferedAmount < LOW_WATER
+    && reportedFill() < RING_HUNGRY
+    && reportedBuffer() < BUFFER_HUNGRY_S
+    && lead() < LEAD_RESUME_S;
 
   session.stdout.on('data', (chunk) => {
     if (ws.readyState !== ws.OPEN) return;
     ws.send(chunk);
+    sentBytes += chunk.length;
 
-    if (ws.bufferedAmount > HIGH_WATER && !drainTimer) {
+    if (shouldHold() && !holdTimer) {
       session.stdout.pause();
-      drainTimer = setInterval(() => {
+      holdTimer = setInterval(() => {
         if (ws.readyState !== ws.OPEN) {
-          clearInterval(drainTimer);
-          drainTimer = null;
+          clearInterval(holdTimer);
+          holdTimer = null;
           return;
         }
-        if (ws.bufferedAmount < LOW_WATER) {
-          clearInterval(drainTimer);
-          drainTimer = null;
+        if (mayResume()) {
+          clearInterval(holdTimer);
+          holdTimer = null;
           session.stdout.resume();
         }
       }, 100);
@@ -144,7 +224,7 @@ wss.on('connection', async (ws, req) => {
   });
 
   ws.on('close', () => {
-    if (drainTimer) clearInterval(drainTimer);
+    if (holdTimer) clearInterval(holdTimer);
   });
 
   session.proc.on('close', () => {

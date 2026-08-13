@@ -80,6 +80,9 @@
     resyncedAt: 0,
     recutUntil: 0,
     recuts: 0,
+    bufferSeconds: 0,
+    bufferFill: -1,
+    bitrates: { 360: 600000, 480: 1000000, 720: 1800000, 1080: 3000000 },
     audioStartedAt: 0,
     audioBase: 0,          // absolute position the fallback audio stream began at
     player: null,          // JSMpeg instance, canvas transport only
@@ -507,6 +510,7 @@
     } else {
       clockPictureToSound(state.player);
     }
+    meterSocket(state.player);
 
     watchSocket();
     if (muxedAudio) {
@@ -583,6 +587,91 @@
       }
       if (decoded) pictureAlive();
     };
+  }
+
+  /**
+   * Telling the server how much is in hand.
+   *
+   * ffmpeg sends faster than real time so that a cushion exists, but the decode
+   * loop above consumes at exactly the soundtrack's pace. The difference has to
+   * be stopped somewhere or it fills the decoder's ring buffer, which then
+   * evicts frames that were never shown — the picture jumps forward and the
+   * sound is left behind, which is heard as the audio arriving late.
+   *
+   * The server cannot see any of that, so the client reports it: seconds of
+   * content received but not yet decoded, from bytes off the wire against the
+   * preset's bitrate. Approximate is fine — it drives a watermark, not a clock.
+   */
+  var socketBytes = 0;
+
+  // How close the decoder's ring buffer is to evicting frames nobody has seen —
+  // read from the buffer itself, so no bitrate has to be guessed at. This is
+  // the quantity that actually matters; seconds are only for the human reading
+  // the diagnostics panel.
+  function ringFill(player) {
+    try {
+      var bits = player && player.video && player.video.bits;
+      if (!bits || !bits.bytes) return -1;
+      var unread = bits.byteLength - (bits.index >> 3);
+      return Math.min(1, Math.max(0, unread / bits.bytes.length));
+    } catch (e) {
+      return -1;
+    }
+  }
+
+  function streamByteRate() {
+    var bits = state.bitrates[state.quality] || state.bitrates[480] || 1000000;
+    // MPEG-TS spends about 6% on packet headers, and in muxed mode there is an
+    // MP2 track in there too.
+    var overhead = state.audioMode === 'muxed' ? 128000 : 0;
+    return (bits + overhead) * 1.06 / 8;
+  }
+
+  function meterSocket(player) {
+    socketBytes = 0;
+    (function attach(attempts) {
+      if (state.player !== player) return;
+      var socket = player.source && player.source.socket;
+      if (!socket) {
+        if (attempts < 40) setTimeout(function () { attach(attempts + 1); }, 50);
+        return;
+      }
+      if (socket.__teslosMetered) return;
+      socket.__teslosMetered = true;
+
+      var previous = socket.onmessage;
+      socket.onmessage = function (event) {
+        var data = event.data;
+        socketBytes += (data && (data.byteLength || data.size)) || 0;
+        if (previous) previous.call(socket, event);
+      };
+    })(0);
+  }
+
+  function reportBuffer() {
+    var player = state.player;
+    if (!player || isDirect()) return;
+    var socket = player.source && player.source.socket;
+    if (!socket || socket.readyState !== 1) return;
+
+    var decoded = 0;
+    try {
+      decoded = (player.video && player.video.decodedTime) || 0;
+    } catch (e) {
+      decoded = 0;
+    }
+    var received = socketBytes / streamByteRate();
+    state.bufferSeconds = Math.max(0, received - decoded);
+    state.bufferFill = ringFill(player);
+
+    try {
+      socket.send(JSON.stringify({
+        buf: Math.round(state.bufferSeconds * 10) / 10,
+        fill: state.bufferFill >= 0 ? Math.round(state.bufferFill * 100) / 100 : undefined,
+      }));
+    } catch (e) {
+      // The socket closed between the check and the send; the next tick copes.
+    }
   }
 
   // JSMpeg swallows close codes, but the socket object is reachable and the
@@ -1297,6 +1386,9 @@
         'sync        ' + (state.audioDrift === undefined ? '—' : state.audioDrift.toFixed(2) + 's')
           + '  picture ' + picturePosition().toFixed(1) + 's'
           + '  sound ' + masterPosition().toFixed(1) + 's',
+        'buffer      ' + state.bufferSeconds.toFixed(1) + 's held'
+          + (state.bufferFill >= 0
+            ? ', ring ' + Math.round(state.bufferFill * 100) + '%' : ''),
         're-cuts     ' + state.recuts
           + (state.resyncedAt ? ', last ' + Math.round((Date.now() - state.resyncedAt) / 1000) + 's ago' : '')
       );
@@ -1323,6 +1415,7 @@
     paintSeek(currentPosition());
     if (el.diag.classList.contains('on')) el.diag.textContent = diagText();
     if (++driftTick % 4 === 0) holdSync();
+    if (driftTick % 2 === 0) reportBuffer();
 
     if (!state.playing) { stuckSince = 0; return; }
 
@@ -1353,6 +1446,7 @@
     .then(function (r) { return r.json(); })
     .then(function (health) {
       if (health.defaultQuality) setQuality(health.defaultQuality);
+      if (health.bitrates) state.bitrates = health.bitrates;
 
       if (health.cookies) el.signedIn.textContent = 'YouTube: çerez girişi';
       else if (health.google) el.signedIn.textContent = 'YouTube: Google girişi';

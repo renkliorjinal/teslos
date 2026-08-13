@@ -87,10 +87,20 @@ until it moves — behind, it catches up as fast as the buffer allows; ahead, it
 waits. Sync stops being a correction and becomes a property of the loop.
 
 That only works with something in the buffer, which is why the server paces at
-`-readrate 1.15` with an initial burst rather than `-re`. `-re` sends at exactly
-1x and never faster, so there is never a cushion to spend. The over-rate must
-stay slight: the decoder's ring buffer evicts undecoded frames on overflow, so a
-server racing ahead throws picture away rather than storing it.
+`-readrate 1.5` with an initial burst rather than `-re`. `-re` sends at exactly
+1x and never faster, so there is never a cushion to spend.
+
+The surplus has to stop somewhere. The client consumes at 1x, so an ungoverned
+over-rate accumulates until the decoder's ring buffer overflows — and it evicts
+undecoded frames, so the picture silently jumps ahead of the sound. That is
+heard as the audio arriving late, which is nothing like what it is. Three
+independent brakes prevent it:
+
+- The client reports the ring's fill fraction, read straight off the buffer, and
+  the server stops sending above 60%. No bitrate has to be agreed on.
+- It also reports seconds held, as a coarser cross-check.
+- The server caps its own lead at 18 s of nominal content, so a page cached from
+  before any of this existed still cannot be overrun.
 
 Re-cutting the canvas stream still exists but is a last resort — 5 s out, with a
 30 s cooldown — for when the picture is starved rather than merely late.
