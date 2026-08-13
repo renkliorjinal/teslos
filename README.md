@@ -208,6 +208,12 @@ Both credentials can coexist. The server prefers the jar, falls back to Google
 when the jar has lapsed, and the player only shows the tabs that whatever is
 configured can actually fill.
 
+Everything either one writes — the jar, the Google client and tokens, probe
+samples — lands in `/var/lib/teslos`, which the unit's `StateDirectory=` grants.
+The install directory itself is read-only to the service, `ProtectSystem=strict`
+included, so a unit file predating that setting fails every save with `EROFS`.
+Copy `deploy/teslos.service` again after pulling if `/setup/` says so.
+
 ---
 
 ## Use

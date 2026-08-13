@@ -106,7 +106,8 @@ SETUP_TOKEN_VALUE="$(grep '^SETUP_TOKEN=' .env | tail -1 | cut -d= -f2-)"
 # So `npm run doctor` can print a working setup link rather than a placeholder.
 sed -i '/^TESLOS_DOMAIN=/d' .env
 printf 'TESLOS_DOMAIN=%s\n' "$DOMAIN" >> .env
-mkdir -p probe-reports
+# Nothing writable is created here on purpose: the unit runs the install
+# read-only and keeps its state in /var/lib/teslos, which systemd creates.
 chown -R "$APP_USER:$APP_USER" "$APP_DIR"
 
 # ---------------------------------------------------------------- nginx

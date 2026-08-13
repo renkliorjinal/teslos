@@ -28,12 +28,19 @@ Environment=XDG_CACHE_HOME=/tmp
 Nice=5
 CPUWeight=80
 
-# The service only ever reads its own directory and spawns ffmpeg/yt-dlp.
+# The service only ever reads its own directory and spawns ffmpeg/yt-dlp, so
+# the install stays read-only — including to itself.
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/opt/teslos/probe-reports
+
+# Everything written at runtime — the cookie jar, the Google credentials and
+# tokens, probe samples — lands in /var/lib/teslos, which systemd creates and
+# hands over to User= above. Without this the whole filesystem is read-only and
+# every save fails with EROFS.
+StateDirectory=teslos
+StateDirectoryMode=0750
 
 StandardOutput=journal
 StandardError=journal

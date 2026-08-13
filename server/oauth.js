@@ -22,9 +22,10 @@ const path = require('path');
 const crypto = require('crypto');
 const config = require('./config');
 
-const ROOT = path.join(__dirname, '..');
-const TOKEN_PATH = path.join(ROOT, 'google-tokens.json');
-const CLIENT_PATH = path.join(ROOT, 'google-client.json');
+// The install directory is read-only to the service; config.stateDir is the
+// one place it may write.
+const TOKEN_PATH = path.join(config.stateDir, 'google-tokens.json');
+const CLIENT_PATH = path.join(config.stateDir, 'google-client.json');
 const SCOPE = 'https://www.googleapis.com/auth/youtube.readonly';
 const API = 'https://www.googleapis.com/youtube/v3';
 
@@ -37,8 +38,12 @@ function readJson(file) {
 }
 
 function writeSecret(file, value) {
-  fs.writeFileSync(file, JSON.stringify(value, null, 2), { mode: 0o600 });
-  fs.chmodSync(file, 0o600);
+  try {
+    fs.writeFileSync(file, JSON.stringify(value, null, 2), { mode: 0o600 });
+    fs.chmodSync(file, 0o600);
+  } catch (err) {
+    throw new Error(config.explainWriteFailure(err));
+  }
 }
 
 // Environment wins, so an operator with shell access can pin the credentials

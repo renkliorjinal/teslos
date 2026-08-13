@@ -49,6 +49,33 @@ function loadEnvFile(file) {
 loadEnvFile(path.join(__dirname, '..', '.env'));
 loadEnvFile('/etc/default/teslos-setup');
 
+// Everything the running service writes — the cookie jar, the Google
+// credentials and tokens, probe samples — goes here, and nowhere else.
+//
+// The unit runs under ProtectSystem=strict, so the install directory is
+// genuinely read-only to the service: a write there fails with EROFS rather
+// than a permission error, which is a confusing thing to meet on the roadside.
+// systemd sets STATE_DIRECTORY from StateDirectory= in the unit; outside
+// systemd the project root is the natural place and needs no setting up.
+const stateDir = process.env.STATE_DIRECTORY
+  || process.env.TESLOS_STATE
+  || path.join(__dirname, '..');
+
+try {
+  fs.mkdirSync(stateDir, { recursive: true });
+} catch (err) {
+  console.warn(`[config] state directory ${stateDir} is not usable: ${err.message}`);
+}
+
+// A jar placed in the project root by hand still counts. Moving the default
+// out from under an existing install should not quietly sign it out.
+function cookieJarPath() {
+  if (process.env.YT_DLP_COOKIES) return process.env.YT_DLP_COOKIES;
+  const legacy = path.join(__dirname, '..', 'cookies.txt');
+  if (stateDir !== path.join(__dirname, '..') && fs.existsSync(legacy)) return legacy;
+  return path.join(stateDir, 'cookies.txt');
+}
+
 // Quality presets. MPEG1 has no modern rate-distortion tricks, so bitrates run
 // higher than an H.264 equivalent would at the same resolution.
 const QUALITY = {
@@ -67,6 +94,16 @@ const proxy = (process.env.PROXY_URL || '').trim();
 // about whether a given proxy is usable.
 const proxyUsableByFfmpeg = /^https?:\/\//i.test(proxy);
 
+// A failed write here almost always means the unit predates StateDirectory=,
+// so the whole filesystem is read-only to the service. "EROFS" on a phone at
+// the roadside is not a diagnosis; the command that fixes it is.
+function explainWriteFailure(err) {
+  if (err.code !== 'EROFS' && err.code !== 'EACCES') return err.message;
+  return `${stateDir} yazılabilir değil — servis dosyası eski. `
+    + 'Sunucuda: git pull && sudo cp deploy/teslos.service /etc/systemd/system/ '
+    + '&& sudo systemctl daemon-reload && sudo systemctl restart teslos';
+}
+
 // Credentials in a proxy URL must never reach a log line or an API response.
 function maskProxy(url) {
   if (!url) return '';
@@ -78,9 +115,10 @@ module.exports = {
   bind: process.env.BIND || '127.0.0.1',
   ytDlp: process.env.YT_DLP || 'yt-dlp',
   ffmpeg: process.env.FFMPEG || 'ffmpeg',
+  stateDir,
   // Checked on every call rather than read once, so uploading a jar through
   // /setup/ takes effect without a restart.
-  cookiesPath: process.env.YT_DLP_COOKIES || path.join(__dirname, '..', 'cookies.txt'),
+  cookiesPath: cookieJarPath(),
   get cookies() {
     return fs.existsSync(this.cookiesPath) ? this.cookiesPath : '';
   },
@@ -98,9 +136,10 @@ module.exports = {
   // metered proxies, and risks 403s on playback.
   proxyMedia: Boolean(proxy) && process.env.PROXY_MEDIA !== '0',
   maskProxy,
+  explainWriteFailure,
   maxSessions: Number(process.env.MAX_SESSIONS) || 3,
   publicDir: path.join(__dirname, '..', 'public'),
-  reportsDir: path.join(__dirname, '..', 'probe-reports'),
+  reportsDir: path.join(stateDir, 'probe-reports'),
   QUALITY,
   DEFAULT_QUALITY,
 

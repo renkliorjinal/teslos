@@ -396,7 +396,7 @@ router.post('/cookies', express.text({ limit: '512kb', type: '*/*' }), (req, res
     fs.writeFileSync(config.cookiesPath, content, { mode: 0o600 });
     fs.chmodSync(config.cookiesPath, 0o600);
   } catch (err) {
-    return fail(res, 500, 'Yazılamadı: ' + err.message);
+    return fail(res, 500, 'Yazılamadı: ' + config.explainWriteFailure(err));
   }
 
   console.log(`[cookies] jar saved with ${rows.length} cookies`);
