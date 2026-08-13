@@ -70,9 +70,14 @@
     // screen, so the direct path is dead the moment the car moves. Decoding in
     // JavaScript and painting into a canvas is the point of this project.
     transport: 'canvas',
-    audioMode: 'muxed',
+    // The car decides this, not us: on this firmware WebAudio produces no
+    // audible output at all while another app holds the speakers, so the
+    // element path — the one Tesla has always been willing to play — is the
+    // default. Muxed stays available for firmware that does route WebAudio.
+    audioMode: 'separate',
     audioNudge: 0,
-    audioRestartedAt: 0,
+    resyncedAt: 0,
+    audioStartedAt: 0,
     audioBase: 0,          // absolute position the fallback audio stream began at
     player: null,          // JSMpeg instance, canvas transport only
     playing: false,
@@ -153,7 +158,27 @@
     return -1;
   }
 
+  // Where the soundtrack has actually got to, when there is one running in its
+  // own element. It is the master clock: sound cannot be nudged without the car
+  // noticing, and the picture can, so everything else is aligned to this.
+  function audioClockRunning() {
+    return !isDirect() && state.audioMode === 'separate'
+      && !el.audio.paused && el.audio.currentTime > 0;
+  }
+
+  function masterPosition() {
+    if (audioClockRunning()) return state.audioBase + el.audio.currentTime;
+    return picturePosition();
+  }
+
   function currentPosition() {
+    if (state.scrubbing) return state.scrubPosition;
+    if (!state.playing) return state.startOffset;
+    return masterPosition();
+  }
+
+  // How far the canvas stream itself has run, which is what drifts.
+  function picturePosition() {
     if (state.scrubbing) return state.scrubPosition;
     if (!state.playing) return state.startOffset;
 
@@ -330,7 +355,8 @@
 
   // ------------------------------------------------------------- transport
 
-  function teardown() {
+  // Tearing down the picture, which costs nothing outside this page.
+  function teardownPicture() {
     // An interval now, not a timeout — clearTimeout would leave it polling
     // against a player that no longer exists.
     clearInterval(state.watchdog);
@@ -352,10 +378,23 @@
     el.video.pause();
     el.video.removeAttribute('src');
     el.video.load();
+  }
 
+  // Tearing down the sound, which does not. The <audio> element is what holds
+  // the car's media source: stopping it hands the speakers back to Spotify, and
+  // starting it takes them again. Every one of those handovers is visible and
+  // audible to the driver, so this is called only when the video really changes
+  // — never to nudge the picture back into line.
+  function teardownAudio() {
     el.audio.pause();
     el.audio.removeAttribute('src');
     el.audio.load();
+    state.audioBase = 0;
+  }
+
+  function teardown() {
+    teardownPicture();
+    teardownAudio();
   }
 
   function start(position) {
@@ -369,6 +408,21 @@
 
     if (isDirect()) startDirect();
     else startCanvas();
+  }
+
+  // Re-cutting the picture to wherever the sound has got to. The soundtrack
+  // plays straight through; only the stream feeding the canvas is replaced, so
+  // the car's media source is untouched and Spotify stays where it is.
+  function resyncPicture() {
+    if (isDirect() || !state.playing) return;
+    // The nudge is a deliberate offset the driver asked for, so the picture is
+    // re-cut to the sound plus that offset rather than straight onto it.
+    state.startOffset = Math.max(0, masterPosition() + state.audioNudge);
+    state.streamStartedAt = performance.now();
+    state.resyncedAt = Date.now();
+    teardownPicture();
+    setStatus('görüntü hizalanıyor…');
+    startCanvas();
   }
 
   function startDirect() {
@@ -439,8 +493,14 @@
     }
 
     watchSocket();
-    if (muxedAudio) armAudioWatchdog();
-    else startFallbackAudio();
+    if (muxedAudio) {
+      armAudioWatchdog();
+    } else if (el.audio.paused || !el.audio.getAttribute('src')) {
+      // Only when there is no soundtrack running. A re-cut of the picture comes
+      // back through here, and starting the element again is the one thing that
+      // must not happen — it is what hands the speakers back and forth.
+      startFallbackAudio();
+    }
   }
 
   // JSMpeg swallows close codes, but the socket object is reachable and the
@@ -696,9 +756,10 @@
       });
   }
 
-  function startFallbackAudio() {
-    state.audioRestartedAt = Date.now();
-    state.audioBase = Math.max(0, state.startOffset - state.audioNudge);
+  function startFallbackAudio(from) {
+    state.audioStartedAt = Date.now();
+    var at = from === undefined ? state.startOffset : from;
+    state.audioBase = Math.max(0, at - state.audioNudge);
     var url = fallbackAudioUrl(state.audioBase);
     el.audio.src = url;
     el.audio.playbackRate = 1;
@@ -711,37 +772,44 @@
     });
   }
 
-  // The fallback runs as its own stream with its own clock, so it drifts from
-  // the picture — and manual nudge buttons are no way to hold sync while
-  // driving. Small errors are absorbed by playing fractionally fast or slow,
-  // which is inaudible; only a gap too large to close that way restarts it.
-  function correctAudioDrift() {
-    if (state.audioMode !== 'separate' || isDirect()) return;
-    if (!state.playing || el.audio.paused || !el.audio.currentTime) return;
+  // Holding picture and sound together — by moving the picture.
+  //
+  // They arrive as two streams with two clocks, so they drift. The old answer
+  // was to restart the soundtrack, and that was the whole disaster: each
+  // restart seized the car's media source, so Spotify was pushed aside and let
+  // back a few seconds later, again and again. Re-cutting the picture costs
+  // nothing anyone outside this page can perceive.
+  //
+  // So the soundtrack is never touched. It runs straight through, holding the
+  // speakers for as long as the video lasts, and the picture is re-cut to meet
+  // it when it has wandered far enough to notice.
+  function holdSync() {
+    if (state.audioMode !== 'separate' || isDirect() || !state.playing) return;
 
-    // audioNudge is a deliberate offset the driver asked for; the correction
-    // holds that, rather than dragging it back to zero and fighting them.
-    var videoAt = currentPosition() - state.audioNudge;
-    var audioAt = state.audioBase + el.audio.currentTime;
-    var drift = videoAt - audioAt;
+    // A soundtrack that has stopped on its own — the stream ended, the link
+    // dropped — is already silent, so restarting it costs nothing that has not
+    // been lost. This is the only restart left, and it needs a cooldown so a
+    // stream that refuses to start does not hammer the media source.
+    if (el.audio.paused && el.audio.getAttribute('src')) {
+      var duration = state.meta && state.meta.duration;
+      var at = picturePosition();
+      if (duration && at >= duration - 2) return;
+      if (Date.now() - state.audioStartedAt > 8000) startFallbackAudio(at);
+      return;
+    }
+
+    if (!el.audio.currentTime) return;
+
+    // audioNudge is a deliberate offset the driver asked for; sync preserves it
+    // rather than dragging it back to zero and fighting them.
+    var drift = picturePosition() - state.audioNudge - masterPosition();
     state.audioDrift = drift;
 
-    // Restarting is not free here: a fresh <audio> src grabs the car's media
-    // source again, so the console flips to the browser every time. On a
-    // stuttering picture the drift threshold is met constantly, and the driver
-    // watches their music get taken and handed back on a loop. Rate correction
-    // closes most gaps on its own; a restart waits out a cooldown first.
-    if (Math.abs(drift) > 4 && Date.now() - state.audioRestartedAt > 25000) {
-      state.audioRestartedAt = Date.now();
-      startFallbackAudio();
-      return;
+    // Worth a re-cut for a gap anyone would see, not for one nobody would. The
+    // cooldown stops a stuttering picture from re-cutting itself to a halt.
+    if (Math.abs(drift) > 1.5 && Date.now() - state.resyncedAt > 12000) {
+      resyncPicture();
     }
-    if (Math.abs(drift) < 0.15) {
-      el.audio.playbackRate = 1;
-      return;
-    }
-    // Positive drift means the audio is behind, so let it run a little faster.
-    el.audio.playbackRate = drift > 0 ? 1.04 : 0.96;
   }
 
   function setAudioMode(mode, restart) {
@@ -757,12 +825,17 @@
     if (restart && state.videoId) start(currentPosition());
   }
 
-  // Sync is corrected automatically, so this only moves the point it aims at —
-  // for when the automatic result is right by the clock but wrong by ear.
+  // Sync is held automatically, so this only moves the point it aims at — for
+  // when the automatic result is right by the clock but wrong by eye. It shifts
+  // the picture, because the picture is the half that can be moved silently.
   function nudgeAudio(delta) {
     if (state.audioMode !== 'separate' || isDirect()) return;
     state.audioNudge += delta;
-    setStatus('ses kaydırma: ' + state.audioNudge.toFixed(1) + ' sn');
+    setStatus('görüntü kaydırma: ' + state.audioNudge.toFixed(1) + ' sn');
+    // Straight away rather than at the next drift check, and past the cooldown:
+    // the driver is watching for the result of the button they just pressed.
+    state.resyncedAt = 0;
+    resyncPicture();
   }
 
   // --------------------------------------------------------------- controls
@@ -1146,7 +1219,7 @@
   setInterval(function () {
     paintSeek(currentPosition());
     if (el.diag.classList.contains('on')) el.diag.textContent = diagText();
-    if (++driftTick % 4 === 0) correctAudioDrift();
+    if (++driftTick % 4 === 0) holdSync();
 
     if (!state.playing) { stuckSince = 0; return; }
 
@@ -1189,7 +1262,7 @@
     .catch(function () { setQuality(state.quality); });
 
   setTransport('canvas', false);
-  setAudioMode('muxed', false);
+  setAudioMode(state.audioMode, false);
 
   if (initial) {
     el.query.value = initial;

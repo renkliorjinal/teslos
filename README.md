@@ -28,7 +28,8 @@ Measured with `/probe/` in a Model 3 on Chromium 140, at 104 km/h:
 | `<canvas>` + WebGL | works, 60 fps |
 | WebCodecs `VideoDecoder` | works, decoded H.264 (`avc1.42C01E`) into a canvas |
 | WebSocket, WebAssembly | work |
-| WebAudio, `<audio>` | work, clocks advancing |
+| WebAudio | clock advances; inaudible while another app holds the speakers |
+| `<audio>`, `<video>` audio | play, and claim the car's media source |
 | Theater apps (YouTube/Netflix) | gated to Park |
 
 The block therefore lands on the `<video>` element specifically, not on video
@@ -64,15 +65,34 @@ presented frames and falls back to canvas on its own when they stop arriving.
 ### Audio on the canvas path
 
 The direct path carries its own audio inside the MP4. The canvas path has two
-options, because WebAudio behaviour in Drive varies by firmware:
+options, and which one works is a property of the car, not of this code:
 
-- **muxed** (default) — MP2 inside the same transport stream, decoded by JSMpeg
-  into WebAudio. Shares a clock with the video, so it stays in sync.
-- **separate** — a plain MP3 body driving an `<audio>` element. Survives Drive
-  on every firmware seen so far, but drifts; the player exposes ±0.5 s nudges.
+- **separate** (default) — a plain MP3 body driving an `<audio>` element. A
+  media element is the only thing this firmware will actually route to the
+  speakers, and it claims the car's media source, so the radio pauses for the
+  video and returns afterwards, the way any media app behaves.
+- **muxed** — MP2 inside the same transport stream, decoded by JSMpeg into
+  WebAudio. One clock, so sync is free. Measured silent on the car tested here:
+  no audible output at all while another app held the speakers, though the
+  context reported `running` throughout. Kept for firmware that does route it.
 
-It starts on *muxed* and falls back to *separate* on its own if the audio
-context has not reached `running` within four seconds.
+The separate path costs a second clock, and the two drift. **Sync is held by
+moving the picture, never the sound.** Restarting the `<audio>` element is what
+seizes the media source, so doing it to chase sync tore the driver's music away
+and handed it back every few seconds. Re-opening the canvas stream costs a
+second of rebuffering and nothing else, so that is what happens instead — past
+a cooldown, so a stuttering picture cannot re-cut itself into a slideshow. The
+±0.5 s buttons shift the picture for the same reason.
+
+Nothing switches paths on its own. Silence is a smaller failure than a media
+source changing hands on a loop, so when the muxed path produces nothing the
+player says so and leaves the choice on the chip.
+
+Whether sound is reaching the speakers is measured, not inferred: an
+`AnalyserNode` is spliced into the output graph and its level is on the
+diagnostics panel. The decoder's own `decodedTime` looks like the obvious signal
+and is not — it advances happily while decoding into a suspended context, which
+is exactly the case where the car is silent.
 
 ### Networking
 
@@ -299,8 +319,11 @@ deploy/        nginx and systemd templates
   usable duration.
 - **MPEG1 is soft-decoded in JavaScript.** Fine at 480p; 1080p leans on both the
   car's CPU and the server's. Only relevant on the canvas path.
-- **Separate-audio mode drifts.** Only relevant if WebAudio turns out to be
-  suppressed on your firmware.
+- **The picture rebuffers when sync is re-cut.** The default audio path runs on
+  its own clock, so about once a minute on a jittery link the canvas stream is
+  re-opened to meet it. A second of black is the price of never disturbing the
+  soundtrack. The WebCodecs transport below removes the cause rather than the
+  symptom: one stream, and the `<video>` element as both speaker and clock.
 - **yt-dlp is load-bearing.** YouTube changes break it regularly; keep it
   updated.
 - **WebCodecs is available and unused.** The probe decodes H.264 through
