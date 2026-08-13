@@ -29,6 +29,7 @@
     overlay: $('overlay'),
     query: $('q'),
     go: $('go'),
+    pasteBtn: $('pasteBtn'),
     results: $('results'),
     tabs: $('tabs'),
     feedNote: $('feedNote'),
@@ -666,6 +667,32 @@
   // ------------------------------------------------------------------ wiring
 
   el.go.addEventListener('click', function () { loadInput(el.query.value); });
+
+  // The car's browser is signed in to YouTube even though this server is not,
+  // so browsing there and handing the link over is the one route to a personal
+  // feed without a cookie jar. Reading the clipboard directly saves the
+  // fiddliest part of that on a touchscreen.
+  el.pasteBtn.addEventListener('click', function () {
+    if (!navigator.clipboard || !navigator.clipboard.readText) {
+      el.query.focus();
+      toast('Bu tarayıcı panoyu okuyamıyor — adresi kutuya yapıştır');
+      return;
+    }
+    navigator.clipboard.readText()
+      .then(function (text) {
+        var value = String(text || '').trim();
+        if (!value) {
+          toast('Pano boş');
+          return;
+        }
+        el.query.value = value;
+        loadInput(value);
+      })
+      .catch(function () {
+        el.query.focus();
+        toast('Panoya erişim reddedildi — adresi kutuya yapıştır');
+      });
+  });
   el.query.addEventListener('keydown', function (event) {
     if (event.key === 'Enter') loadInput(el.query.value);
   });
