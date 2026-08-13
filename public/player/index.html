@@ -103,6 +103,14 @@
           white-space: pre-wrap; }
   .diag.on { display: block; }
 
+  /* Replacing the canvas stream tears down its WebGL context, and what the car
+     paints in the gap is not ours to choose — it came out white, which reads as
+     a fault rather than a pause. An opaque cover makes the gap deliberate. */
+  .recut { position: absolute; inset: 0; z-index: 15; background: #000;
+           display: none; align-items: center; justify-content: center;
+           color: var(--muted); font-size: .95rem; }
+  .recut.on { display: flex; }
+
   .toast { position: absolute; top: 20px; left: 50%; transform: translateX(-50%); z-index: 30;
            background: #2a1116; border: 1px solid #742; color: #ffb4b4; padding: 14px 20px;
            border-radius: 10px; font-size: .95rem; max-width: 80vw; display: none; }
@@ -112,6 +120,7 @@
 <div class="stage">
   <canvas id="screen"></canvas>
   <video id="direct" playsinline></video>
+  <div class="recut" id="recut">hizalanıyor…</div>
   <div class="toast" id="toast"></div>
   <pre class="diag" id="diag"></pre>
 

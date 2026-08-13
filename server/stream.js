@@ -1,8 +1,55 @@
 'use strict';
 
-const { spawn } = require('child_process');
+const { spawn, execFileSync } = require('child_process');
 const config = require('./config');
 const youtube = require('./youtube');
+
+// Pacing, which turns out to be the whole difference between a picture that
+// holds together and one that has to be re-cut every few seconds.
+//
+// `-re` sends at exactly 1x and never faster. That leaves the client with no
+// buffer at all: every network hiccup puts the picture permanently behind the
+// soundtrack, because there is nothing queued to catch up with. A slight
+// over-rate builds a cushion during the good stretches and spends it on the bad
+// ones, which is what a moving car needs.
+//
+// It must stay slight. The client's decoder writes into a fixed ring buffer that
+// evicts undecoded frames when it overflows, so a server racing ahead would
+// throw away picture rather than store it.
+//
+// -readrate arrived in ffmpeg 5.1 and -readrate_initial_burst in 6.1, and the
+// droplet's build is not ours to choose, so both are probed once rather than
+// assumed.
+const READ_RATE = process.env.READ_RATE || '1.15';
+const INITIAL_BURST = process.env.READ_BURST || '8';
+
+let pacing = null;
+
+function pacingArgs() {
+  if (pacing) return pacing;
+
+  let help = '';
+  try {
+    help = execFileSync(config.ffmpeg, ['-hide_banner', '-h', 'full'],
+      { timeout: 15000, maxBuffer: 8 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] }).toString();
+  } catch {
+    help = '';
+  }
+
+  if (help.includes('-readrate ')) {
+    pacing = ['-readrate', READ_RATE];
+    if (help.includes('-readrate_initial_burst ')) {
+      // Fills the client's buffer at once instead of over the first minute, so
+      // the protection is there before the first hiccup rather than after it.
+      pacing.push('-readrate_initial_burst', INITIAL_BURST);
+    }
+    console.log(`[ffmpeg] pacing with ${pacing.join(' ')}`);
+  } else {
+    pacing = ['-re'];
+    console.log('[ffmpeg] no -readrate in this build; pacing with -re (no buffer cushion)');
+  }
+  return pacing;
+}
 
 // One ffmpeg process per viewer, so this is the backpressure valve.
 //
@@ -98,7 +145,7 @@ async function startVideoStream({ videoId, quality, startTime = 0, withAudio = t
     const preset = config.QUALITY[quality] || config.QUALITY[config.DEFAULT_QUALITY];
     const streams = await youtube.resolveStreams(videoId, quality);
 
-    const args = ['-hide_banner', '-loglevel', 'error', '-re'];
+    const args = ['-hide_banner', '-loglevel', 'error', ...pacingArgs()];
     args.push(...inputArgs(streams.video, startTime));
 
     // DASH gives video and audio as separate URLs; progressive gives one muxed
@@ -210,7 +257,9 @@ async function startAudioStream({ videoId, startTime = 0 }) {
   const streams = await youtube.resolveStreams(videoId, 480);
   const url = streams.audio || streams.video;
 
-  const args = ['-hide_banner', '-loglevel', 'error', '-re'];
+  // The soundtrack is the master clock, so a stall in it stalls everything.
+  // Paced the same way, and it is a tenth of the video's bitrate anyway.
+  const args = ['-hide_banner', '-loglevel', 'error', ...pacingArgs()];
   args.push(...inputArgs(url, startTime));
   args.push(
     '-vn',

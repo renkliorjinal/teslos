@@ -56,6 +56,7 @@
     nudgeFwd: $('nudgeFwd'),
     status: $('status'),
     toast: $('toast'),
+    recut: $('recut'),
     audio: $('fallbackAudio')
   };
 
@@ -77,6 +78,8 @@
     audioMode: 'separate',
     audioNudge: 0,
     resyncedAt: 0,
+    recutUntil: 0,
+    recuts: 0,
     audioStartedAt: 0,
     audioBase: 0,          // absolute position the fallback audio stream began at
     player: null,          // JSMpeg instance, canvas transport only
@@ -399,6 +402,7 @@
 
   function start(position) {
     teardown();
+    el.recut.classList.remove('on');
 
     state.startOffset = Math.max(0, position || 0);
     state.streamStartedAt = performance.now();
@@ -417,11 +421,18 @@
     if (isDirect() || !state.playing) return;
     // The nudge is a deliberate offset the driver asked for, so the picture is
     // re-cut to the sound plus that offset rather than straight onto it.
-    state.startOffset = Math.max(0, masterPosition() + state.audioNudge);
+    // Floored, because the server seeks to a whole second: measuring the decode
+    // target from an unfloored offset would build in up to a second of error.
+    state.startOffset = Math.max(0, Math.floor(masterPosition() + state.audioNudge));
     state.streamStartedAt = performance.now();
     state.resyncedAt = Date.now();
+    state.recuts += 1;
     teardownPicture();
     setStatus('görüntü hizalanıyor…');
+    el.recut.classList.add('on');
+    // A floor as well as a ceiling: whipping the cover away the instant the
+    // first frame decodes shows the flash it exists to hide.
+    state.recutUntil = Date.now() + 400;
     startCanvas();
   }
 
@@ -480,7 +491,10 @@
       // The server paces at 1x, so the client never gets ahead and has only
       // what has arrived to play from. Room to absorb a few seconds of jitter
       // is the difference between a wobbly link and a stuttering picture.
-      videoBufferSize: 4 * 1024 * 1024,
+      // Room for the cushion the server's over-rate builds. The decoder evicts
+      // undecoded frames when this overflows, so it has to be larger than the
+      // lead the server can get, not merely larger than a hiccup.
+      videoBufferSize: 8 * 1024 * 1024,
       audioBufferSize: 512 * 1024,
       onSourceEstablished: function () { setStatus('akıyor'); },
       onStalled: function () { setStatus('tampon bekleniyor…'); },
@@ -490,6 +504,8 @@
     if (muxedAudio) {
       unlockAudio();
       attachMeter(state.player.audioOut);
+    } else {
+      clockPictureToSound(state.player);
     }
 
     watchSocket();
@@ -501,6 +517,72 @@
       // must not happen — it is what hands the speakers back and forth.
       startFallbackAudio();
     }
+  }
+
+  // Frames are decoding again, so the cover has done its job. The delay keeps
+  // it up long enough to be a pause rather than a flash.
+  function pictureAlive() {
+    if (!el.recut.classList.contains('on')) return;
+    if (Date.now() < state.recutUntil) return;
+    el.recut.classList.remove('on');
+    setStatus('akıyor');
+  }
+
+  /**
+   * Pacing the picture off the soundtrack.
+   *
+   * JSMpeg decodes exactly one video frame per animation frame, which is what
+   * you want when the source is a live camera and the display is the clock. It
+   * is wrong here twice over. At 60 Hz against 30 fps content it wants to run at
+   * twice real time, so it empties its buffer the instant anything arrives and
+   * then sits starved at the leading edge — meaning every network hiccup puts
+   * the picture permanently behind, with nothing queued to recover from. And
+   * nothing in it knows about the soundtrack, which is playing to its own clock
+   * in an <audio> element.
+   *
+   * So the decode loop is driven by the sound instead: frames are decoded until
+   * the picture reaches where the soundtrack has got to, and then not decoded
+   * again until it moves. Behind, it catches up as fast as the buffer allows;
+   * ahead, it waits. Sync stops being something to correct after the fact and
+   * becomes a property of the loop.
+   *
+   * This replaces one method on the instance rather than taking over the loop,
+   * so JSMpeg keeps its own source handling, stall reporting and teardown.
+   */
+  function clockPictureToSound(player) {
+    var wallStart = performance.now();
+
+    player.updateForStreaming = function () {
+      if (!this.video) return;
+
+      var waited = performance.now() - wallStart;
+      var target;
+      if (audioClockRunning()) {
+        target = masterPosition() + state.audioNudge - state.startOffset;
+      } else if (waited < 5000 && el.audio.getAttribute('src')) {
+        // The soundtrack is still opening. Decode enough for a first frame so
+        // the screen is not black, then hold — racing ahead on the wall clock
+        // and then freezing when the sound arrives looks far worse than a short
+        // still.
+        target = 0.05;
+      } else {
+        // No soundtrack coming. The server paces close to real time, so the
+        // wall clock is the honest stand-in.
+        target = (waited - 5000) / 1000;
+      }
+
+      // A cap, so catching up from a long stall cannot lock the main thread for
+      // whole seconds. At 60 Hz this still permits about eight times real time,
+      // which closes a ten-second gap in under a second of playback.
+      var budget = 16;
+      var decoded = 0;
+      while (this.video.decodedTime < target && budget > 0) {
+        if (!this.video.decode()) break;
+        decoded += 1;
+        budget -= 1;
+      }
+      if (decoded) pictureAlive();
+    };
   }
 
   // JSMpeg swallows close codes, but the socket object is reachable and the
@@ -552,7 +634,18 @@
     }
 
     setStatus('bağlantı koptu, sürdürülüyor…');
-    state.resumeTimer = setTimeout(function () { start(position); }, 1500);
+    state.resumeTimer = setTimeout(function () {
+      // A dropped video socket is a picture problem. Restarting the whole
+      // session would take the soundtrack down with it, and the car would hand
+      // the speakers back to Spotify for no reason — the socket dropping is
+      // exactly when that is most likely to happen twice in a row.
+      if (audioClockRunning()) {
+        state.resyncedAt = 0;
+        resyncPicture();
+        return;
+      }
+      start(position);
+    }, 1500);
   }
 
   function handleEnded() {
@@ -805,9 +898,12 @@
     var drift = picturePosition() - state.audioNudge - masterPosition();
     state.audioDrift = drift;
 
-    // Worth a re-cut for a gap anyone would see, not for one nobody would. The
-    // cooldown stops a stuttering picture from re-cutting itself to a halt.
-    if (Math.abs(drift) > 1.5 && Date.now() - state.resyncedAt > 12000) {
+    // A last resort, not a mechanism. The decode loop is slaved to this same
+    // clock, so it closes any gap it has the buffered frames to close; getting
+    // here means the picture is starved rather than merely late, and re-cutting
+    // is the only thing that helps. Both numbers are deliberately far out — a
+    // re-cut is a second of black, and doing it often is worse than being late.
+    if (Math.abs(drift) > 5 && Date.now() - state.resyncedAt > 30000) {
       resyncPicture();
     }
   }
@@ -1195,7 +1291,14 @@
           ? out.enqueuedTime.toFixed(2) + 's' : '—'),
         'audio elem  ' + (el.audio.paused ? 'paused' : 'playing at ' + el.audio.currentTime.toFixed(1) + 's')
           + ' x' + el.audio.playbackRate.toFixed(2),
-        'audio drift ' + (state.audioDrift === undefined ? '—' : state.audioDrift.toFixed(2) + 's')
+        // Positive means the picture is ahead of the sound. The decode loop is
+        // slaved to the sound, so this should hover near zero; a growing
+        // negative number means the buffer is starved, not that sync is broken.
+        'sync        ' + (state.audioDrift === undefined ? '—' : state.audioDrift.toFixed(2) + 's')
+          + '  picture ' + picturePosition().toFixed(1) + 's'
+          + '  sound ' + masterPosition().toFixed(1) + 's',
+        're-cuts     ' + state.recuts
+          + (state.resyncedAt ? ', last ' + Math.round((Date.now() - state.resyncedAt) / 1000) + 's ago' : '')
       );
     }
     return lines.join('\n');

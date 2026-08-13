@@ -76,13 +76,30 @@ options, and which one works is a property of the car, not of this code:
   no audible output at all while another app held the speakers, though the
   context reported `running` throughout. Kept for firmware that does route it.
 
-The separate path costs a second clock, and the two drift. **Sync is held by
-moving the picture, never the sound.** Restarting the `<audio>` element is what
-seizes the media source, so doing it to chase sync tore the driver's music away
-and handed it back every few seconds. Re-opening the canvas stream costs a
-second of rebuffering and nothing else, so that is what happens instead — past
-a cooldown, so a stuttering picture cannot re-cut itself into a slideshow. The
-±0.5 s buttons shift the picture for the same reason.
+The separate path costs a second clock, so **the soundtrack is the master and
+the decode loop is slaved to it.** JSMpeg normally decodes one frame per
+animation frame, which against 30 fps content on a 60 Hz display wants to run at
+double speed: it empties its buffer the moment anything arrives and then sits
+starved at the leading edge, so a single network hiccup puts the picture
+permanently behind with nothing queued to recover from. Instead, frames are
+decoded until the picture reaches where the sound has got to and then not again
+until it moves — behind, it catches up as fast as the buffer allows; ahead, it
+waits. Sync stops being a correction and becomes a property of the loop.
+
+That only works with something in the buffer, which is why the server paces at
+`-readrate 1.15` with an initial burst rather than `-re`. `-re` sends at exactly
+1x and never faster, so there is never a cushion to spend. The over-rate must
+stay slight: the decoder's ring buffer evicts undecoded frames on overflow, so a
+server racing ahead throws picture away rather than storing it.
+
+Re-cutting the canvas stream still exists but is a last resort — 5 s out, with a
+30 s cooldown — for when the picture is starved rather than merely late.
+Restarting the `<audio>` element is never a remedy: that is what seizes the media
+source, and doing it to chase sync tore the driver's music away and handed it
+back every few seconds. A re-cut is covered by an opaque black panel, because
+tearing down the WebGL context makes the car paint the canvas white, which reads
+as a fault rather than a pause. The ±0.5 s buttons shift the picture, for the
+same reason nothing else does.
 
 Nothing switches paths on its own. Silence is a smaller failure than a media
 source changing hands on a loop, so when the muxed path produces nothing the
@@ -319,11 +336,12 @@ deploy/        nginx and systemd templates
   usable duration.
 - **MPEG1 is soft-decoded in JavaScript.** Fine at 480p; 1080p leans on both the
   car's CPU and the server's. Only relevant on the canvas path.
-- **The picture rebuffers when sync is re-cut.** The default audio path runs on
-  its own clock, so about once a minute on a jittery link the canvas stream is
-  re-opened to meet it. A second of black is the price of never disturbing the
-  soundtrack. The WebCodecs transport below removes the cause rather than the
-  symptom: one stream, and the `<video>` element as both speaker and clock.
+- **A starved picture still costs a re-cut.** The decode loop closes any gap it
+  has buffered frames for, but a link too slow to sustain the bitrate runs the
+  buffer dry, and then the only remedy is re-opening the stream further on — a
+  second of black. Dropping to a lower quality preset is the real fix. The
+  WebCodecs transport below removes the cause rather than the symptom: one
+  stream, with the `<video>` element as both speaker and clock.
 - **yt-dlp is load-bearing.** YouTube changes break it regularly; keep it
   updated.
 - **WebCodecs is available and unused.** The probe decodes H.264 through
