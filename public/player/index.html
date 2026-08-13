@@ -22,8 +22,6 @@
   .overlay { position: absolute; inset: 0; background: rgba(5,5,10,.94);
              display: flex; align-items: center; justify-content: center; padding: 20px; z-index: 20; }
   .overlay.hidden { display: none; }
-  .picker { width: min(760px, 100%); max-height: 92vh; overflow-y: auto; }
-
   .picker { width: min(1100px, 100%); max-height: 94vh; overflow-y: auto; }
 
   .tabs { display: flex; gap: 8px; margin-top: 14px; overflow-x: auto; padding-bottom: 4px; }
@@ -72,6 +70,10 @@
   .chip { padding: 12px 16px; border-radius: 9px; border: 1px solid var(--line);
           background: var(--panel-2); font-size: .9rem; font-weight: 600; cursor: pointer; min-height: 48px; }
   .chip.on { background: #00506b; border-color: #00779e; }
+  /* The chip shows both modes and marks the live one, because a chip that
+     shows only the current state reads as a button that selects it. */
+  #audioBtn b { font-weight: 400; color: var(--muted); }
+  #audioBtn b.live { font-weight: 700; color: var(--text); text-decoration: underline; }
   .chip:active { opacity: .6; }
 
   /* Audio path choices only exist on the canvas transport; the direct one
@@ -176,7 +178,9 @@
       <span class="title" id="title">—</span>
       <button class="chip" id="qualityBtn">480p</button>
       <button class="chip" id="transportBtn">Yol: doğrudan</button>
-      <button class="chip audio-only" id="audioBtn">Ses: muxed</button>
+      <button class="chip audio-only" id="audioBtn">
+        Ses: <b id="audioMuxed">muxed</b> / <b id="audioSep">ayrı</b>
+      </button>
       <button class="chip nudge" id="nudgeBack">Ses −0,5s</button>
       <button class="chip nudge" id="nudgeFwd">Ses +0,5s</button>
       <button class="chip" id="diagBtn">Tanı</button>

@@ -44,6 +44,8 @@
     qualityBtn: $('qualityBtn'),
     transportBtn: $('transportBtn'),
     audioBtn: $('audioBtn'),
+    audioMuxed: $('audioMuxed'),
+    audioSep: $('audioSep'),
     libBtn: $('libBtn'),
     tapStart: $('tapStart'),
     tapBtn: $('tapBtn'),
@@ -631,7 +633,8 @@
 
   function setAudioMode(mode, restart) {
     state.audioMode = mode;
-    el.audioBtn.textContent = 'Ses: ' + (mode === 'muxed' ? 'muxed' : 'ayrı');
+    el.audioMuxed.classList.toggle('live', mode === 'muxed');
+    el.audioSep.classList.toggle('live', mode === 'separate');
     document.body.classList.toggle('separate-audio', mode === 'separate');
     if (restart && state.videoId) start(currentPosition());
   }
@@ -990,6 +993,13 @@
         'audio mode  ' + state.audioMode,
         'audio ctx   ' + (out && out.context ? out.context.state : 'none')
           + (out ? (out.unlocked ? ' unlocked' : ' LOCKED') : ''),
+        // Silence with a running context means nothing is being decoded into
+        // it, which is a different problem from a muted output.
+        'audio dec   ' + (state.player && state.player.audio
+          ? (state.player.audio.decodedTime || 0).toFixed(2) + 's'
+          : 'no decoder'),
+        'audio queued' + ' ' + (out && out.enqueuedTime !== undefined
+          ? out.enqueuedTime.toFixed(2) + 's' : '—'),
         'audio elem  ' + (el.audio.paused ? 'paused' : 'playing at ' + el.audio.currentTime.toFixed(1) + 's')
           + ' x' + el.audio.playbackRate.toFixed(2),
         'audio drift ' + (state.audioDrift === undefined ? '—' : state.audioDrift.toFixed(2) + 's')

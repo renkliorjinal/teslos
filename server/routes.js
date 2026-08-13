@@ -107,7 +107,7 @@ router.get('/stream', async (req, res) => {
 router.get('/audio', async (req, res) => {
   const videoId = youtube.parseVideoId(req.query.v);
   if (!videoId) return fail(res, 400, 'Geçersiz video kimliği');
-  if (stream.atCapacity()) return fail(res, 503, 'Sunucu kapasitesi dolu');
+  if (stream.audioAtCapacity()) return fail(res, 503, 'Ses akışı kapasitesi dolu');
 
   const startTime = Math.max(0, Number(req.query.t) || 0);
 

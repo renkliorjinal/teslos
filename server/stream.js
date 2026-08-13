@@ -11,7 +11,11 @@ const youtube = require('./youtube');
 // that arrived during that window pass the capacity check and then all start at
 // once — which on a one-core box is precisely the stutter the limit exists to
 // prevent.
+// Two pools. The audio companion is a 96 kbit MP3 transcode beside a full
+// video encode, so charging it to the same budget lets a viewer be refused
+// their own soundtrack.
 const live = new Set();
+const liveAudio = new Set();
 let reserved = 0;
 
 function sessionCount() {
@@ -20,6 +24,12 @@ function sessionCount() {
 
 function atCapacity() {
   return sessionCount() >= config.maxSessions;
+}
+
+// One spare over the video budget: correcting drift restarts the audio stream,
+// and the replacement briefly overlaps the one it replaces.
+function audioAtCapacity() {
+  return liveAudio.size >= config.maxSessions + 1;
 }
 
 function reserveSlot() {
@@ -39,7 +49,7 @@ const IDLE_LIMIT_MS = 30000;
 
 setInterval(() => {
   const now = Date.now();
-  for (const session of live) {
+  for (const session of [...live, ...liveAudio]) {
     if (now - session.lastOutput < IDLE_LIMIT_MS) continue;
     console.warn(`[ffmpeg] ${session.label} produced nothing for 30s, killing it`);
     session.stop();
@@ -121,7 +131,7 @@ async function startVideoStream({ videoId, quality, startTime = 0, withAudio = t
       '-',
     );
 
-    return spawnFfmpeg(args, `video ${videoId}@${quality}p t=${startTime}`);
+    return spawnFfmpeg(args, `video ${videoId}@${quality}p t=${startTime}`, 'video');
   } finally {
     releaseSlot();
   }
@@ -183,7 +193,7 @@ async function startDirectStream({ videoId, quality, startTime = 0 }) {
       '-',
     );
 
-    return spawnFfmpeg(args, `direct ${videoId}@${quality}p t=${startTime} ${copyable ? 'copy' : 'transcode'}`);
+    return spawnFfmpeg(args, `direct ${videoId}@${quality}p t=${startTime} ${copyable ? 'copy' : 'transcode'}`, 'video');
   } finally {
     releaseSlot();
   }
@@ -197,31 +207,27 @@ async function startDirectStream({ videoId, quality, startTime = 0 }) {
  * <audio> element is the known-good escape hatch — Tesla does not gate those.
  */
 async function startAudioStream({ videoId, startTime = 0 }) {
-  const releaseSlot = reserveSlot();
-  try {
-    const streams = await youtube.resolveStreams(videoId, 480);
-    const url = streams.audio || streams.video;
+  const streams = await youtube.resolveStreams(videoId, 480);
+  const url = streams.audio || streams.video;
 
-    const args = ['-hide_banner', '-loglevel', 'error', '-re'];
-    args.push(...inputArgs(url, startTime));
-    args.push(
-      '-vn',
-      '-c:a', 'libmp3lame',
-      '-b:a', '96k',
-      '-ar', '44100',
-      '-ac', '2',
-      '-f', 'mp3',
-      '-',
-    );
+  const args = ['-hide_banner', '-loglevel', 'error', '-re'];
+  args.push(...inputArgs(url, startTime));
+  args.push(
+    '-vn',
+    '-c:a', 'libmp3lame',
+    '-b:a', '96k',
+    '-ar', '44100',
+    '-ac', '2',
+    '-f', 'mp3',
+    '-',
+  );
 
-    return spawnFfmpeg(args, `audio ${videoId} t=${startTime}`);
-  } finally {
-    releaseSlot();
-  }
+  return spawnFfmpeg(args, `audio ${videoId} t=${startTime}`, 'audio');
 }
 
-function spawnFfmpeg(args, label) {
+function spawnFfmpeg(args, label, pool) {
   const proc = spawn(config.ffmpeg, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+  const group = pool === 'audio' ? liveAudio : live;
 
   const session = {
     proc,
@@ -238,13 +244,13 @@ function spawnFfmpeg(args, label) {
     },
   };
 
-  live.add(session);
+  group.add(session);
   let released = false;
   const release = () => {
     if (released) return;
     released = true;
-    live.delete(session);
-    console.log(`[ffmpeg] stopped ${label} — ${sessionCount()}/${config.maxSessions} in use`);
+    group.delete(session);
+    console.log(`[ffmpeg] stopped ${label} — ${sessionCount()}/${config.maxSessions} video, ${liveAudio.size} audio`);
   };
 
   // Doubles as the liveness signal the reaper reads.
@@ -268,8 +274,11 @@ function spawnFfmpeg(args, label) {
     console.error(`[ffmpeg] ${label} failed to start: ${err.message}`);
   });
 
-  console.log(`[ffmpeg] started ${label} — ${sessionCount()}/${config.maxSessions} in use`);
+  console.log(`[ffmpeg] started ${label} — ${sessionCount()}/${config.maxSessions} video, ${liveAudio.size} audio`);
   return session;
 }
 
-module.exports = { startVideoStream, startDirectStream, startAudioStream, sessionCount, atCapacity };
+module.exports = {
+  startVideoStream, startDirectStream, startAudioStream,
+  sessionCount, atCapacity, audioAtCapacity,
+};

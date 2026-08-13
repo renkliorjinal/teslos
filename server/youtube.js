@@ -177,6 +177,17 @@ async function getMetadata(videoId) {
   };
 }
 
+// YouTube's media URLs stay valid for hours, so resolving the same video twice
+// within seconds is pure latency and one more chance to fail. The audio
+// companion stream in particular asks for exactly what the video stream just
+// looked up.
+const resolveCache = new Map();
+const RESOLVE_TTL_MS = 5 * 60 * 1000;
+
+function cacheKey(videoId, height, requireAvc) {
+  return `${videoId}|${height}|${requireAvc ? 'avc' : 'any'}`;
+}
+
 // Resolves direct media URLs. YouTube serves DASH, so the best video and best
 // audio usually come back as two separate URLs; progressive formats come back
 // as one. Both shapes are normalised into { video, audio }.
@@ -184,6 +195,9 @@ async function getMetadata(videoId) {
 // av01 is excluded because software AV1 decode on a small droplet cannot keep
 // up with realtime transcoding.
 async function resolveStreams(videoId, height, { requireAvc = false } = {}) {
+  const key = cacheKey(videoId, height, requireAvc);
+  const hit = resolveCache.get(key);
+  if (hit && Date.now() - hit.at < RESOLVE_TTL_MS) return hit.streams;
   // Remuxing into MP4 without re-encoding only works if the tracks already are
   // H.264 and AAC. requireAvc therefore admits nothing else and fails loudly
   // when there is no such rendition — falling back to VP9 here would produce an
@@ -204,8 +218,19 @@ async function resolveStreams(videoId, height, { requireAvc = false } = {}) {
   const urls = out.trim().split('\n').map((s) => s.trim()).filter((s) => s.startsWith('http'));
 
   if (urls.length === 0) throw new Error('yt-dlp returned no stream URL');
-  if (urls.length === 1) return { video: urls[0], audio: null };
-  return { video: urls[0], audio: urls[1] };
+  const streams = urls.length === 1
+    ? { video: urls[0], audio: null }
+    : { video: urls[0], audio: urls[1] };
+
+  resolveCache.set(key, { at: Date.now(), streams });
+  // The map is per-video and short-lived, but a long session should not let it
+  // grow without bound.
+  if (resolveCache.size > 64) {
+    for (const [k, v] of resolveCache) {
+      if (Date.now() - v.at > RESOLVE_TTL_MS) resolveCache.delete(k);
+    }
+  }
+  return streams;
 }
 
 // The feeds a signed-in account exposes. Everything but `trending` needs the
