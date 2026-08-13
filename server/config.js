@@ -87,6 +87,10 @@ module.exports = {
   // The upload endpoint writes a credential to disk on a public host, so it
   // stays off entirely unless a token has been set.
   setupToken: process.env.SETUP_TOKEN || '',
+  // Recorded by setup.sh when the certificate was issued. Google's OAuth
+  // redirect has to match a registered URI exactly, so it is built from this
+  // rather than from whatever Host header a request happens to carry.
+  publicHost: (process.env.TESLOS_DOMAIN || '').trim(),
   proxy,
   proxyUsableByFfmpeg,
   // YouTube ties a media URL to the address that asked for it, so by default

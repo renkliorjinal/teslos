@@ -60,11 +60,28 @@ if (ytDlpVersion) pass('yt-dlp', ytDlpVersion.trim());
 else fail('yt-dlp', `not runnable as "${config.ytDlp}"`);
 
 if (config.setupToken) {
-  const host = process.env.TESLOS_DOMAIN || 'your-host';
+  const host = config.publicHost || 'your-host';
   pass('setup page', `https://${host}/setup/?k=${config.setupToken}`);
-  console.log('  Open that link on a computer to upload a YouTube cookie jar.');
+  console.log('  Open that link to sign in — Google from a phone, or a cookie jar');
+  console.log('  from a computer.');
 } else {
-  console.log('  note  no SETUP_TOKEN set — the /setup/ cookie page is disabled');
+  console.log('  note  no SETUP_TOKEN set — the /setup/ sign-in page is disabled');
+}
+
+// The Google sign-in is the one obtainable without a desktop browser, so its
+// state is worth reporting beside the cookie jar rather than only in the UI.
+{
+  const oauth = require('./oauth');
+  const state = oauth.status();
+  if (state.signedIn) {
+    pass('google sign-in', `serves ${state.feeds.join(', ')}`);
+  } else if (state.configured) {
+    console.log('  note  Google client configured but not signed in — open /setup/');
+  } else if (!config.publicHost) {
+    console.log('  note  no TESLOS_DOMAIN — Google sign-in cannot build its redirect URI');
+  } else {
+    console.log('  note  no Google sign-in — /setup/ can set one up from a phone');
+  }
 }
 
 if (config.proxy) {

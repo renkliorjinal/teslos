@@ -3,3 +3,5 @@ node_modules/
 *.log
 probe-reports/
 cookies.txt
+google-tokens.json
+google-client.json

@@ -177,12 +177,43 @@ first:
 None of this applies to the car itself, which reaches YouTube from a mobile
 address and is not challenged.
 
+### Signing in to your own account
+
+Two routes, and they buy different things.
+
+**A cookie jar** is the complete one: watch history, home recommendations,
+age-restricted and members-only videos, everything. It also needs a browser
+extension on a real computer, which is exactly what you do not have on a road
+trip.
+
+**Google OAuth** is the one that works from a phone. `/setup/` walks through
+creating a Google Cloud project, enabling *YouTube Data API v3*, and pasting
+back the client ID and secret; after that "sign in with Google" is one tap and
+an ordinary consent screen. It serves **subscriptions, likes and playlists**.
+
+It does **not** serve watch history or the home feed, and no credential makes
+it: Google removed both from the Data API years ago and there is no replacement
+endpoint. Watch Later went the same way. If those matter, the cookie jar is the
+only answer.
+
+Two things about the consent screen are worth knowing before they surprise you
+on the roadside. Google will call the app unverified — it is yours, and
+verification is not worth requesting for one user; continue via **Advanced**.
+And while the Cloud project sits in *Testing*, Google expires the grant every
+seven days, so signing in again is a periodic chore until the project is
+published. Your own Google account must be listed under **Test users** or the
+consent screen refuses outright.
+
+Both credentials can coexist. The server prefers the jar, falls back to Google
+when the jar has lapsed, and the player only shows the tabs that whatever is
+configured can actually fill.
+
 ---
 
 ## Use
 
 Open `https://your-host/` in the car — that is the player. `/probe/` measures
-what the firmware allows; `/setup/` takes a YouTube cookie jar.
+what the firmware allows; `/setup/` handles both ways of signing in.
 
 1. **`/probe/`** first, to find out what this particular firmware allows.
    Allow the location prompt — GPS speed is how a sample is labelled Park or

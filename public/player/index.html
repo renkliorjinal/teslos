@@ -143,15 +143,21 @@
       <p class="muted" style="font-size:.82rem;line-height:1.6;margin:10px 0 0">
         Arabanın tarayıcısı YouTube'a giriş yapmış durumda, yani orada kendi
         önerilerini görüyorsun. Videoyu bulup adresi kopyala, buraya dön ve
-        yapıştır düğmesine bas.
+        yapıştır düğmesine bas. Aboneliklerin doğrudan burada çıksın istersen
+        <a href="/setup/">Google ile giriş yap</a> — telefondan yapılıyor.
       </p>
 
+      <!-- Which of these survive depends on how the server is signed in: the
+           cookie jar serves all of them, a Google sign-in serves three, and an
+           anonymous server only Popüler. player.js removes the rest rather than
+           leaving tabs that answer with an error. -->
       <div class="tabs" id="tabs">
         <button class="tab on" data-feed="recommended">Öneriler</button>
         <button class="tab" data-feed="subscriptions">Abonelikler</button>
         <button class="tab" data-feed="history">Geçmiş</button>
         <button class="tab" data-feed="watch_later">Sonra izle</button>
         <button class="tab" data-feed="liked">Beğendiklerim</button>
+        <button class="tab" data-feed="playlists">Listelerim</button>
         <button class="tab" data-feed="trending">Popüler</button>
       </div>
 

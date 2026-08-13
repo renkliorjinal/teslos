@@ -6,6 +6,7 @@ const { spawn } = require('child_process');
 const express = require('express');
 const config = require('./config');
 const youtube = require('./youtube');
+const oauth = require('./oauth');
 const stream = require('./stream');
 
 const router = express.Router();
@@ -23,6 +24,16 @@ router.get('/health', (req, res) => {
     qualities: Object.keys(config.QUALITY).map(Number),
     ytClient: youtube.activeClient(),
     cookies: Boolean(config.cookies),
+    google: oauth.signedIn(),
+    // Which tabs the picker should offer. The cookie jar can serve everything;
+    // a Google sign-in serves a subset; with neither, only Popüler works. The
+    // two overlap but are not nested — playlists come only from Google — so
+    // this is a union rather than a choice.
+    feeds: [...new Set([
+      ...(config.cookies ? youtube.feedNames() : []),
+      ...oauth.status().feeds,
+      'trending',
+    ])],
     proxy: config.maskProxy(config.proxy) || null,
     proxyMedia: config.proxyMedia && config.proxyUsableByFfmpeg,
   });
@@ -52,14 +63,109 @@ router.get('/search', async (req, res) => {
   }
 });
 
+// Two possible sources. The cookie jar is the richer one — it is the only
+// thing that can reach watch history or the home page — so it wins when it is
+// there. A Google sign-in covers subscriptions, likes and playlists, and is the
+// only one obtainable without a desktop browser.
+//
+// A jar that has lapsed fails in a way that looks exactly like a jar that was
+// never uploaded, so when the preferred source refuses, try the other before
+// telling the driver there is nothing to show.
 router.get('/feed', async (req, res) => {
   const name = String(req.query.name || 'recommended');
-  try {
-    const items = await youtube.feed(name, req.query.limit);
-    res.json({ ok: true, name, items });
-  } catch (err) {
-    fail(res, 502, err.message);
+
+  const sources = [];
+  if (config.cookies) sources.push(() => youtube.feed(name, req.query.limit));
+  if (oauth.canServe(name)) sources.push(() => oauth.feed(name, req.query.limit));
+  // With neither credential only `trending` has anything in it, and youtube.js
+  // is the one that knows how to say so.
+  if (!sources.length) sources.push(() => youtube.feed(name, req.query.limit));
+
+  let lastError;
+  for (const load of sources) {
+    try {
+      const items = await load();
+      res.json({ ok: true, name, items });
+      return;
+    } catch (err) {
+      lastError = err;
+    }
   }
+  fail(res, 502, lastError.message);
+});
+
+// ------------------------------------------------------------------- google
+//
+// Signing in to YouTube from a phone. The cookie jar needs a browser extension
+// on a real computer; this needs a Google Cloud project, which is tedious to
+// create but can be done entirely on a touchscreen. It buys subscriptions,
+// likes and playlists — not watch history, which Google exposes to no API.
+
+router.get('/auth/status', (req, res) => {
+  res.json({ ok: true, ...oauth.status() });
+});
+
+router.post('/auth/config', express.json({ limit: '8kb' }), (req, res) => {
+  if (!requireToken(req, res)) return;
+  try {
+    oauth.setCredentials(req.body && req.body.clientId, req.body && req.body.clientSecret);
+  } catch (err) {
+    return fail(res, 400, err.message);
+  }
+  console.log('[oauth] client credentials stored');
+  res.json({ ok: true, ...oauth.status() });
+});
+
+// A redirect rather than JSON, so the setup page is a plain link and the car's
+// browser follows it the way it would any other.
+router.get('/auth/start', (req, res) => {
+  if (!requireTokenValue(String(req.query.k || ''), res)) return;
+  if (!oauth.configured()) return fail(res, 400, 'Google istemci bilgileri girilmemiş');
+  const target = oauth.authUrl();
+  if (!target) return fail(res, 400, 'TESLOS_DOMAIN tanımlı değil; yönlendirme adresi kurulamıyor');
+  res.redirect(target);
+});
+
+// Google sends the browser back here. Whatever happens the answer is a page,
+// not JSON — a person is looking at it.
+router.get('/auth/callback', async (req, res) => {
+  const done = (title, detail, ok) => {
+    res.status(ok ? 200 : 400).type('html').send(`<!DOCTYPE html>
+<html lang="tr"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>teslos · giriş</title><link rel="stylesheet" href="/shared/style.css"></head>
+<body><div class="wrap"><div class="panel">
+<h1 style="margin:0 0 10px">${ok ? '✓' : '✕'} ${title}</h1>
+<p class="muted" style="line-height:1.6">${detail}</p>
+<p style="margin-top:18px"><a class="btn primary" href="/" style="text-decoration:none">OYNATICIYA DÖN</a>
+&nbsp;<a class="btn" href="/setup/" style="text-decoration:none">KURULUM</a></p>
+</div></div></body></html>`);
+  };
+
+  if (req.query.error) {
+    return done('Giriş iptal edildi', String(req.query.error).slice(0, 200), false);
+  }
+  if (!oauth.stateOk(String(req.query.state || ''))) {
+    return done('Giriş doğrulanamadı',
+      'Bağlantı eskimiş olabilir. /setup/ sayfasından yeniden başlat.', false);
+  }
+
+  try {
+    await oauth.exchangeCode(String(req.query.code || ''));
+  } catch (err) {
+    return done('Giriş tamamlanamadı', err.message, false);
+  }
+  console.log('[oauth] signed in');
+  done('YouTube hesabın bağlandı',
+    'Abonelikler, beğendiklerin ve oynatma listelerin artık oynatıcıda. '
+    + 'İzleme geçmişi ve ana sayfa önerileri Google tarafından hiçbir API\'ye açılmıyor.', true);
+});
+
+router.post('/auth/logout', (req, res) => {
+  if (!requireToken(req, res)) return;
+  oauth.forget();
+  console.log('[oauth] signed out');
+  res.json({ ok: true, ...oauth.status() });
 });
 
 // Direct path: a remuxed MP4 body for an ordinary <video> element. No
@@ -208,22 +314,22 @@ function pipeFfmpeg(res, args, contentType) {
 // It writes a live credential to disk on a public host, so it is off unless
 // SETUP_TOKEN is set, and it never reads anything back out.
 
-function tokenOk(req) {
-  if (!config.setupToken) return false;
-  const given = req.get('x-setup-token') || '';
-  return given.length === config.setupToken.length && given === config.setupToken;
-}
-
-function requireToken(req, res) {
+function requireTokenValue(given, res) {
   if (!config.setupToken) {
-    fail(res, 503, 'SETUP_TOKEN tanımlı değil; çerez yükleme kapalı');
+    fail(res, 503, 'SETUP_TOKEN tanımlı değil; kurulum sayfası kapalı');
     return false;
   }
-  if (!tokenOk(req)) {
+  if (given.length !== config.setupToken.length || given !== config.setupToken) {
     fail(res, 401, 'Kurulum anahtarı hatalı');
     return false;
   }
   return true;
+}
+
+// The header is the normal carrier. /auth/start is the exception: it is a link
+// the browser follows, so its token travels in the query string.
+function requireToken(req, res) {
+  return requireTokenValue(req.get('x-setup-token') || '', res);
 }
 
 // Reports on the jar without disclosing it: how many cookies, for which

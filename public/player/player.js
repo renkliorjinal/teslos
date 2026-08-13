@@ -267,14 +267,17 @@
     });
   }
 
-  var FEED_LABELS = {
-    recommended: 'önerileri',
-    subscriptions: 'abonelik akışını',
-    history: 'izleme geçmişini',
-    watch_later: 'sonra izle listesini',
-    liked: 'beğendiklerini',
-    trending: 'popüler videoları'
-  };
+  // Tabs the server cannot answer are removed rather than left to fail: on a
+  // car screen a tab that always errors is worse than no tab.
+  function applyFeeds(available) {
+    var offered = available && available.length ? available : ['trending'];
+    var kept = [];
+    document.querySelectorAll('.tab').forEach(function (tab) {
+      if (offered.indexOf(tab.dataset.feed) === -1) tab.remove();
+      else kept.push(tab.dataset.feed);
+    });
+    return kept;
+  }
 
   function loadFeed(name) {
     document.querySelectorAll('.tab').forEach(function (tab) {
@@ -291,7 +294,7 @@
           // has nothing to show. Point at the fix rather than an empty grid.
           el.feedNote.innerHTML = '';
           el.feedNote.appendChild(document.createTextNode(data.error + ' '));
-          if (/giriş|sign in|bot/i.test(data.error)) {
+          if (/giriş|oturum|sign in|bot/i.test(data.error)) {
             var link = document.createElement('a');
             link.href = '/setup/';
             link.textContent = 'YouTube girişi yap →';
@@ -537,27 +540,42 @@
     });
   });
 
+  function audioDecodedTime() {
+    try {
+      return (state.player && state.player.audio && state.player.audio.decodedTime) || 0;
+    } catch (e) {
+      return 0;
+    }
+  }
+
+  // Whether the muxed path is working is a question about sound coming out, not
+  // about what the AudioContext reports. Judging it on context state alone
+  // abandoned a perfectly good stream — running and unlocked — for the drifting
+  // fallback, which is the worse of the two. So watch the decoder: if it is
+  // chewing through audio, leave it alone.
   function armAudioWatchdog() {
+    var startedAt = audioDecodedTime();
+
     state.watchdog = setTimeout(function () {
-      // One more attempt before writing WebAudio off: the muxed path shares a
-      // clock with the video and the fallback drifts, so it is worth keeping.
       unlockAudio();
 
       state.watchdog = setTimeout(function () {
+        if (audioDecodedTime() > startedAt + 0.5) return;   // audio is flowing
+
         var out = state.player && state.player.audioOut;
         var ctx = out && out.context;
-        if (ctx && ctx.state === 'running') return;
+        if (ctx && ctx.state === 'running' && audioDecodedTime() > 0) return;
 
-        // Without a gesture the context cannot start no matter which path is
-        // chosen, so switching would swap one silence for another.
+        // Without a gesture nothing will play on any path, so switching would
+        // swap one silence for another.
         if (!gestureSeen) {
           toast('Ses için ekrana bir kez dokun');
           return;
         }
 
-        toast('WebAudio susturuldu — ayrı ses akışına geçiliyor');
+        toast('Ses çözülmüyor — ayrı ses akışına geçiliyor');
         setAudioMode('separate', true);
-      }, 4000);
+      }, 6000);
     }, 4000);
   }
 
@@ -1057,10 +1075,14 @@
     .then(function (r) { return r.json(); })
     .then(function (health) {
       if (health.defaultQuality) setQuality(health.defaultQuality);
-      el.signedIn.textContent = health.cookies ? 'YouTube: giriş yapıldı' : 'YouTube: giriş yok';
-      // Personalised feeds need the cookie jar; without it only Popüler has
-      // anything in it, so open on that rather than on an error.
-      if (!initial) loadFeed(health.cookies ? 'recommended' : 'trending');
+
+      if (health.cookies) el.signedIn.textContent = 'YouTube: çerez girişi';
+      else if (health.google) el.signedIn.textContent = 'YouTube: Google girişi';
+      else el.signedIn.textContent = 'YouTube: giriş yok';
+
+      var kept = applyFeeds(health.feeds);
+      // Open on the richest list this server can actually fill.
+      if (!initial) loadFeed(kept[0] || 'trending');
     })
     .catch(function () { setQuality(state.quality); });
 
