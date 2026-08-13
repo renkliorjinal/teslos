@@ -425,10 +425,7 @@
     });
 
     // A user gesture opened this, so the context is allowed to start.
-    if (muxedAudio && state.player.audioOut && state.player.audioOut.context) {
-      var ctx = state.player.audioOut.context;
-      if (ctx.state === 'suspended' && ctx.resume) ctx.resume();
-    }
+    if (muxedAudio) unlockAudio();
 
     watchSocket();
     if (muxedAudio) armAudioWatchdog();
@@ -502,8 +499,23 @@
   var gestureSeen = false;
 
   function unlockAudio() {
-    var ctx = state.player && state.player.audioOut && state.player.audioOut.context;
-    if (ctx && ctx.state === 'suspended' && ctx.resume) ctx.resume();
+    // JSMpeg has its own gate on top of the AudioContext, and it caches one
+    // context across every player it creates — so a context that was born
+    // suspended before the first tap is inherited by everything afterwards.
+    // Resuming without also calling unlock() leaves JSMpeg believing it is
+    // still muted.
+    var out = state.player && state.player.audioOut;
+    if (out) {
+      var ctx = out.context;
+      if (ctx && ctx.state === 'suspended' && ctx.resume) ctx.resume();
+      if (typeof out.unlock === 'function' && !out.unlocked) {
+        try {
+          out.unlock(function () { /* JSMpeg flips its own flag */ });
+        } catch (e) {
+          // Older builds without the gate.
+        }
+      }
+    }
 
     if (state.audioMode === 'separate' && el.audio.getAttribute('src') && el.audio.paused) {
       el.audio.play().catch(function () { /* the hint below already covers it */ });
@@ -524,21 +536,25 @@
 
   function armAudioWatchdog() {
     state.watchdog = setTimeout(function () {
-      var out = state.player && state.player.audioOut;
-      var ctx = out && out.context;
-      if (ctx && ctx.state === 'running') return;
+      // One more attempt before writing WebAudio off: the muxed path shares a
+      // clock with the video and the fallback drifts, so it is worth keeping.
+      unlockAudio();
 
-      // Without a gesture the context cannot start no matter which path is
-      // chosen, so switching would swap one silence for another.
-      if (!gestureSeen) {
-        toast('Ses için ekrana bir kez dokun');
-        return;
-      }
+      state.watchdog = setTimeout(function () {
+        var out = state.player && state.player.audioOut;
+        var ctx = out && out.context;
+        if (ctx && ctx.state === 'running') return;
 
-      // WebAudio is suppressed on this firmware/drive state. The <audio>
-      // element path is the documented survivor, so move over to it.
-      toast('WebAudio susturuldu — ayrı ses akışına geçiliyor');
-      setAudioMode('separate', true);
+        // Without a gesture the context cannot start no matter which path is
+        // chosen, so switching would swap one silence for another.
+        if (!gestureSeen) {
+          toast('Ses için ekrana bir kez dokun');
+          return;
+        }
+
+        toast('WebAudio susturuldu — ayrı ses akışına geçiliyor');
+        setAudioMode('separate', true);
+      }, 4000);
     }, 4000);
   }
 
@@ -548,10 +564,35 @@
       + '&_=' + Date.now();
   }
 
+  // A media element reports every failure the same opaque way, so a server-side
+  // refusal — no capacity, YouTube saying no — arrives as a codec complaint.
+  // The real reason is in the body it declined to play.
+  function explainMediaFailure(url, fallback) {
+    var controller = new AbortController();
+    fetch(url, { signal: controller.signal })
+      .then(function (response) {
+        var type = response.headers.get('content-type') || '';
+        if (type.indexOf('json') === -1) {
+          controller.abort();
+          toast(fallback);
+          return null;
+        }
+        return response.json();
+      })
+      .then(function (body) {
+        if (body && body.error) toast(body.error);
+      })
+      .catch(function (err) {
+        if (err.name !== 'AbortError') toast(fallback);
+      });
+  }
+
   function startFallbackAudio() {
-    el.audio.src = fallbackAudioUrl(state.startOffset + state.audioNudge);
+    var url = fallbackAudioUrl(state.startOffset + state.audioNudge);
+    el.audio.src = url;
     el.audio.play().catch(function (err) {
-      toast('Ses başlatılamadı: ' + err.name);
+      if (err.name === 'NotSupportedError') explainMediaFailure(url, 'Ses akışı oynatılamadı');
+      else toast('Ses başlatılamadı: ' + err.name);
     });
   }
 
