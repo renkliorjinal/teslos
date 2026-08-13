@@ -52,6 +52,16 @@ router.get('/search', async (req, res) => {
   }
 });
 
+router.get('/feed', async (req, res) => {
+  const name = String(req.query.name || 'recommended');
+  try {
+    const items = await youtube.feed(name, req.query.limit);
+    res.json({ ok: true, name, items });
+  } catch (err) {
+    fail(res, 502, err.message);
+  }
+});
+
 // Direct path: a remuxed MP4 body for an ordinary <video> element. No
 // transcoding, so this costs a fraction of the canvas path and looks far
 // better. Seeking works by re-requesting with a new ?t= — a piped fragmented

@@ -208,6 +208,48 @@ async function resolveStreams(videoId, height, { requireAvc = false } = {}) {
   return { video: urls[0], audio: urls[1] };
 }
 
+// The feeds a signed-in account exposes. Everything but `trending` needs the
+// cookie jar; without it YouTube serves a signed-out page and yt-dlp finds
+// nothing, which is worth telling the user rather than showing an empty grid.
+const FEEDS = {
+  recommended: { url: 'https://www.youtube.com/feed/recommended', needsAuth: true },
+  subscriptions: { url: 'https://www.youtube.com/feed/subscriptions', needsAuth: true },
+  history: { url: 'https://www.youtube.com/feed/history', needsAuth: true },
+  watch_later: { url: 'https://www.youtube.com/feed/watch_later', needsAuth: true },
+  liked: { url: 'https://www.youtube.com/playlist?list=LL', needsAuth: true },
+  trending: { url: 'https://www.youtube.com/feed/trending', needsAuth: false },
+};
+
+function feedNames() {
+  return Object.keys(FEEDS);
+}
+
+async function feed(name, limit = 24) {
+  const entry = FEEDS[name];
+  if (!entry) throw new Error(`Bilinmeyen liste: ${name}`);
+  if (entry.needsAuth && !config.cookies) {
+    throw new Error('Bu liste için YouTube girişi gerekiyor');
+  }
+
+  const count = Math.min(Math.max(Number(limit) || 24, 1), 50);
+  const out = await runWithClients([
+    ...baseArgs(),
+    '--flat-playlist',
+    '--playlist-end', String(count),
+    '--print', printJson(['id', 'title', 'duration', 'uploader', 'channel']),
+    entry.url,
+  ], { timeout: 60000 });
+
+  return parseJsonLines(out)
+    .map((info) => ({
+      videoId: text(info.id),
+      title: text(info.title, text(info.id)),
+      duration: seconds(info.duration),
+      uploader: text(info.uploader) || text(info.channel),
+    }))
+    .filter((item) => VIDEO_ID.test(item.videoId));
+}
+
 async function search(query, limit = 12) {
   const count = Math.min(Math.max(Number(limit) || 12, 1), 25);
   const out = await runWithClients([
@@ -227,4 +269,7 @@ async function search(query, limit = 12) {
     .filter((item) => VIDEO_ID.test(item.videoId));
 }
 
-module.exports = { parseVideoId, watchUrl, getMetadata, resolveStreams, search, activeClient, CLIENT_CHAIN };
+module.exports = {
+  parseVideoId, watchUrl, getMetadata, resolveStreams, search,
+  feed, feedNames, activeClient, CLIENT_CHAIN,
+};

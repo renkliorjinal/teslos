@@ -59,6 +59,14 @@ const ytDlpVersion = tryExec(config.ytDlp, ['--version']);
 if (ytDlpVersion) pass('yt-dlp', ytDlpVersion.trim());
 else fail('yt-dlp', `not runnable as "${config.ytDlp}"`);
 
+if (config.setupToken) {
+  const host = process.env.TESLOS_DOMAIN || 'your-host';
+  pass('setup page', `https://${host}/setup/?k=${config.setupToken}`);
+  console.log('  Open that link on a computer to upload a YouTube cookie jar.');
+} else {
+  console.log('  note  no SETUP_TOKEN set — the /setup/ cookie page is disabled');
+}
+
 if (config.proxy) {
   // The example in .env.example is a shape, not an address, and pasting it
   // verbatim reaches yt-dlp as an unparseable URL several steps later.

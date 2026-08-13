@@ -30,6 +30,9 @@
     query: $('q'),
     go: $('go'),
     results: $('results'),
+    tabs: $('tabs'),
+    feedNote: $('feedNote'),
+    signedIn: $('signedIn'),
     bar: $('bar'),
     seek: $('seek'),
     fill: $('fill'),
@@ -194,6 +197,7 @@
               setStatus('hazır');
               return;
             }
+            el.feedNote.textContent = '';
             renderResults(search.results);
             setStatus(search.results.length + ' sonuç');
           });
@@ -205,26 +209,96 @@
       .then(function () { el.go.disabled = false; });
   }
 
-  function renderResults(results) {
+  // A grid of thumbnails, because picking a video from a list of titles on a car
+  // screen is worse than useless. Thumbnails come straight from YouTube's CDN
+  // rather than through this server: the car can reach it perfectly well, and
+  // routing them through a metered proxy would cost real money for pictures.
+  function renderResults(items, emptyText) {
     el.results.innerHTML = '';
-    results.forEach(function (item) {
-      var node = document.createElement('div');
-      node.className = 'result';
-      node.innerHTML = '<div class="t"><b></b><span></span></div><div class="d"></div>';
-      node.querySelector('b').textContent = item.title;
-      node.querySelector('span').textContent = item.uploader || '';
-      node.querySelector('.d').textContent = item.duration ? fmtTime(item.duration) : 'canlı';
-      node.addEventListener('click', function () {
+    if (!items.length) {
+      el.feedNote.textContent = emptyText || 'Bu listede video yok.';
+      return;
+    }
+
+    items.forEach(function (item) {
+      var card = document.createElement('div');
+      card.className = 'card';
+
+      var thumb = document.createElement('div');
+      thumb.className = 'thumb';
+      var img = document.createElement('img');
+      img.loading = 'lazy';
+      img.alt = '';
+      img.src = 'https://i.ytimg.com/vi/' + item.videoId + '/mqdefault.jpg';
+      thumb.appendChild(img);
+      if (item.duration) {
+        var len = document.createElement('span');
+        len.className = 'len';
+        len.textContent = fmtTime(item.duration);
+        thumb.appendChild(len);
+      }
+
+      var meta = document.createElement('div');
+      meta.className = 'meta';
+      var title = document.createElement('b');
+      title.textContent = item.title;
+      var who = document.createElement('span');
+      who.textContent = item.uploader || '';
+      meta.appendChild(title);
+      meta.appendChild(who);
+
+      card.appendChild(thumb);
+      card.appendChild(meta);
+      card.addEventListener('click', function () {
+        // Reached by tapping, so a gesture has happened and audio can start.
         openVideo({
           videoId: item.videoId,
           title: item.title,
           duration: item.duration,
           isLive: !item.duration,
           uploader: item.uploader
-        });
+        }, true);
       });
-      el.results.appendChild(node);
+      el.results.appendChild(card);
     });
+  }
+
+  var FEED_LABELS = {
+    recommended: 'önerileri',
+    subscriptions: 'abonelik akışını',
+    history: 'izleme geçmişini',
+    watch_later: 'sonra izle listesini',
+    liked: 'beğendiklerini',
+    trending: 'popüler videoları'
+  };
+
+  function loadFeed(name) {
+    document.querySelectorAll('.tab').forEach(function (tab) {
+      tab.classList.toggle('on', tab.dataset.feed === name);
+    });
+    el.results.innerHTML = '';
+    el.feedNote.textContent = 'Yükleniyor…';
+
+    fetch('/api/feed?name=' + encodeURIComponent(name))
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (!data.ok) {
+          // Everything but Popüler is account-specific, so an unsigned server
+          // has nothing to show. Point at the fix rather than an empty grid.
+          el.feedNote.innerHTML = '';
+          el.feedNote.appendChild(document.createTextNode(data.error + ' '));
+          if (/giriş|sign in|bot/i.test(data.error)) {
+            var link = document.createElement('a');
+            link.href = '/setup/';
+            link.textContent = 'YouTube girişi yap →';
+            el.feedNote.appendChild(link);
+          }
+          return;
+        }
+        el.feedNote.textContent = '';
+        renderResults(data.items, 'Bu listede video yok.');
+      })
+      .catch(function (err) { el.feedNote.textContent = 'Hata: ' + err.message; });
   }
 
   function openVideo(meta, autostart) {
@@ -629,8 +703,11 @@
     el.playPause.textContent = '▶';
     el.overlay.classList.remove('hidden');
     el.query.value = '';
-    el.results.innerHTML = '';
     setStatus('hazır');
+  });
+
+  document.querySelectorAll('.tab').forEach(function (tab) {
+    tab.addEventListener('click', function () { loadFeed(tab.dataset.feed); });
   });
 
   // Copying a stream instead of re-encoding it means the cut can only land on
@@ -857,17 +934,22 @@
 
   // ------------------------------------------------------------------- boot
 
+  var initial = new URLSearchParams(location.search).get('v');
+
   fetch('/api/health')
     .then(function (r) { return r.json(); })
     .then(function (health) {
       if (health.defaultQuality) setQuality(health.defaultQuality);
+      el.signedIn.textContent = health.cookies ? 'YouTube: giriş yapıldı' : 'YouTube: giriş yok';
+      // Personalised feeds need the cookie jar; without it only Popüler has
+      // anything in it, so open on that rather than on an error.
+      if (!initial) loadFeed(health.cookies ? 'recommended' : 'trending');
     })
     .catch(function () { setQuality(state.quality); });
 
   setTransport('canvas', false);
   setAudioMode('muxed', false);
 
-  var initial = new URLSearchParams(location.search).get('v');
   if (initial) {
     el.query.value = initial;
     // Reached by link, so no gesture has happened: prepare everything and wait

@@ -24,16 +24,33 @@
   .overlay.hidden { display: none; }
   .picker { width: min(760px, 100%); max-height: 92vh; overflow-y: auto; }
 
-  .results { margin-top: 12px; }
-  .result { display: flex; gap: 12px; align-items: center; padding: 14px;
-            border: 1px solid var(--line); border-radius: 10px; margin-bottom: 8px;
-            background: var(--panel-2); cursor: pointer; }
-  .result:active { opacity: .6; }
-  .result .t { flex: 1; min-width: 0; }
-  .result .t b { display: block; font-size: 1rem; overflow: hidden;
-                 text-overflow: ellipsis; white-space: nowrap; }
-  .result .t span { color: var(--muted); font-size: .84rem; }
-  .result .d { color: var(--muted); font-variant-numeric: tabular-nums; font-size: .9rem; }
+  .picker { width: min(1100px, 100%); max-height: 94vh; overflow-y: auto; }
+
+  .tabs { display: flex; gap: 8px; margin-top: 14px; overflow-x: auto; padding-bottom: 4px; }
+  .tab { flex: 0 0 auto; padding: 11px 16px; border-radius: 999px; border: 1px solid var(--line);
+         background: var(--panel-2); color: var(--text); font-size: .9rem; font-weight: 600;
+         cursor: pointer; white-space: nowrap; }
+  .tab.on { background: #00506b; border-color: #00779e; }
+  .tab:active { opacity: .6; }
+
+  .feednote { margin-top: 12px; color: var(--muted); font-size: .88rem; line-height: 1.6; }
+  .feednote a { font-weight: 600; }
+
+  .grid { display: grid; gap: 14px; margin-top: 14px;
+          grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); }
+  .card { background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px;
+          overflow: hidden; cursor: pointer; }
+  .card:active { opacity: .6; }
+  .thumb { position: relative; aspect-ratio: 16 / 9; background: #000; }
+  .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .thumb .len { position: absolute; right: 6px; bottom: 6px; background: rgba(0,0,0,.82);
+                color: #fff; font-size: .74rem; padding: 2px 6px; border-radius: 4px;
+                font-variant-numeric: tabular-nums; }
+  .card .meta { padding: 10px 11px; }
+  .card .meta b { display: block; font-size: .9rem; line-height: 1.35; max-height: 2.7em;
+                  overflow: hidden; }
+  .card .meta span { display: block; color: var(--muted); font-size: .8rem; margin-top: 5px;
+                     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
   .bar { position: absolute; left: 0; right: 0; bottom: 0; z-index: 10;
          background: linear-gradient(transparent, rgba(4,4,9,.93) 22%);
@@ -104,17 +121,28 @@
 
   <div class="overlay" id="overlay">
     <div class="picker">
-      <h1>teslos</h1>
-      <p class="sub">YouTube bağlantısı yapıştır ya da ara</p>
+      <div class="row" style="align-items:center">
+        <h1 style="margin:0;flex:1">teslos</h1>
+        <span class="muted" id="signedIn" style="font-size:.85rem"></span>
+      </div>
 
-      <div class="row">
-        <input class="input" id="q" style="flex:1;min-width:260px"
-               placeholder="YouTube linki, video kimliği veya arama terimi"
+      <div class="row" style="margin-top:12px">
+        <input class="input" id="q" style="flex:1;min-width:240px"
+               placeholder="Ara, ya da YouTube linki yapıştır"
                autocomplete="off" autocapitalize="off" spellcheck="false">
         <button class="btn primary" id="go">AÇ</button>
       </div>
 
-      <div class="row" style="margin-top:12px">
+      <div class="tabs" id="tabs">
+        <button class="tab on" data-feed="recommended">Öneriler</button>
+        <button class="tab" data-feed="subscriptions">Abonelikler</button>
+        <button class="tab" data-feed="history">Geçmiş</button>
+        <button class="tab" data-feed="watch_later">Sonra izle</button>
+        <button class="tab" data-feed="liked">Beğendiklerim</button>
+        <button class="tab" data-feed="trending">Popüler</button>
+      </div>
+
+      <div class="row" style="margin-top:10px">
         <span class="muted" style="font-size:.88rem">Kalite:</span>
         <button class="chip" data-q="360">360p</button>
         <button class="chip" data-q="480">480p</button>
@@ -122,12 +150,8 @@
         <button class="chip" data-q="1080">1080p</button>
       </div>
 
-      <div class="results" id="results"></div>
-
-      <p class="muted" style="font-size:.82rem;line-height:1.6;margin-top:18px">
-        Bağlantı hızını bilmiyorsan <a href="/probe/">probe</a> sayfasındaki hız testini çalıştır.
-        YouTube girişi için <a href="/setup/">kurulum</a>.
-      </p>
+      <div class="feednote" id="feedNote"></div>
+      <div class="grid" id="results"></div>
     </div>
   </div>
 

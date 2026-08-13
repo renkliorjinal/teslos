@@ -102,6 +102,10 @@ if ! grep -q '^SETUP_TOKEN=' .env; then
   printf 'SETUP_TOKEN=%s\n' "$(head -c 18 /dev/urandom | base64 | tr -d '/+=')" >> .env
 fi
 SETUP_TOKEN_VALUE="$(grep '^SETUP_TOKEN=' .env | tail -1 | cut -d= -f2-)"
+
+# So `npm run doctor` can print a working setup link rather than a placeholder.
+sed -i '/^TESLOS_DOMAIN=/d' .env
+printf 'TESLOS_DOMAIN=%s\n' "$DOMAIN" >> .env
 mkdir -p probe-reports
 chown -R "$APP_USER:$APP_USER" "$APP_DIR"
 
@@ -225,7 +229,8 @@ cat <<DONE
   The player is on the bare hostname. /probe/ measures what this firmware
   allows; /setup/ takes a pasted YouTube cookie jar.
 
-  Setup token:  $SETUP_TOKEN_VALUE
+  YouTube sign-in:  https://$DOMAIN/setup/?k=$SETUP_TOKEN_VALUE
+  Open that on a computer and pick the cookies.txt your browser extension made.
 
   Logs:     journalctl -u teslos -f
   Restart:  systemctl restart teslos

@@ -195,11 +195,16 @@ what the firmware allows; `/setup/` takes a YouTube cookie jar.
    Then `npm run report -- diff` on the server, which pairs the newest Park
    sample with the newest Drive one and says what changed.
 
-2. **`/player/`** to watch. Paste a link or search; tap the picture for
-   controls. It starts on the canvas transport, since that is the one that
-   survives Drive; the **Yol** chip switches to direct, which is better
-   quality but only usable parked. **Tanı** shows what the video element is
-   really doing, and opens itself when playback stalls.
+2. **The player**, on the bare hostname. Signed in, it opens on your own
+   recommendations, with tabs for subscriptions, history, watch later and
+   likes; signed out, only trending has anything in it. Search and pasted
+   links work either way. Thumbnails load straight from YouTube's CDN rather
+   than through the server, so they cost no proxy bandwidth.
+
+   It starts on the canvas transport, since that is the one that survives
+   Drive; the **Yol** chip switches to direct, which is better quality but
+   only usable parked. **Tanı** shows what the video element is really doing,
+   and opens itself when playback stalls.
 
 ### Quality presets
 
