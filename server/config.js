@@ -90,7 +90,7 @@ module.exports = {
   // metered proxies, and risks 403s on playback.
   proxyMedia: Boolean(proxy) && process.env.PROXY_MEDIA !== '0',
   maskProxy,
-  maxSessions: Number(process.env.MAX_SESSIONS) || 2,
+  maxSessions: Number(process.env.MAX_SESSIONS) || 3,
   publicDir: path.join(__dirname, '..', 'public'),
   reportsDir: path.join(__dirname, '..', 'probe-reports'),
   QUALITY,
