@@ -1,18 +1,26 @@
 /* Sized for the Tesla centre screen: roughly a 1900x1080 browser viewport on
    Model 3/Y. Touch targets are deliberately large — this is a capacitive screen
-   used at arm's length, not a desktop. */
+   used at arm's length, not a desktop.
+
+   The palette follows YouTube's dark theme, because that is what the driver has
+   just come from and switching between the two should not feel like switching
+   applications. Grey-on-grey is the one thing avoided throughout: every state
+   an element can be in, disabled included, stays legible in daylight through a
+   windscreen. */
 
 :root {
-  --bg: #07070c;
-  --panel: #11111c;
-  --panel-2: #171727;
-  --line: #262636;
-  --text: #e8e8f0;
-  --muted: #8b8b9e;
-  --accent: #00c8ff;
-  --ok: #4ade80;
-  --warn: #fbbf24;
-  --fail: #f87171;
+  --bg: #0f0f0f;
+  --panel: #181818;
+  --panel-2: #272727;
+  --panel-3: #3f3f3f;
+  --line: #303030;
+  --text: #f1f1f1;
+  --muted: #aaaaaa;
+  --accent: #ff4e45;
+  --brand: #ff0033;
+  --ok: #2ba640;
+  --warn: #ffd24d;
+  --fail: #ff6b6b;
 }
 
 * {
@@ -25,12 +33,12 @@ body {
   padding: 0;
   background: var(--bg);
   color: var(--text);
-  font-family: system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+  font-family: Roboto, "Helvetica Neue", system-ui, -apple-system, Arial, sans-serif;
   -webkit-tap-highlight-color: transparent;
 }
 
 a {
-  color: var(--accent);
+  color: #3ea6ff;
 }
 
 .wrap {
@@ -41,7 +49,9 @@ a {
 
 h1 {
   font-size: 1.5rem;
+  font-weight: 700;
   margin: 0 0 4px;
+  letter-spacing: -0.01em;
 }
 
 .sub {
@@ -58,26 +68,62 @@ h1 {
   margin-bottom: 14px;
 }
 
+/* Pill-shaped, the way YouTube's own controls are. */
 .btn {
   appearance: none;
-  border: 1px solid var(--line);
+  border: 1px solid transparent;
   background: var(--panel-2);
   color: var(--text);
-  border-radius: 10px;
-  padding: 16px 22px;
+  border-radius: 999px;
+  padding: 16px 24px;
   font-size: 1.05rem;
-  font-weight: 600;
+  font-weight: 500;
   cursor: pointer;
   min-height: 58px;
+  transition: background 0.12s;
+}
+
+.btn:hover {
+  background: var(--panel-3);
 }
 
 .btn:active {
-  opacity: 0.6;
+  background: #4d4d4d;
 }
 
 .btn.primary {
-  background: #00506b;
-  border-color: #00779e;
+  background: var(--text);
+  color: #0f0f0f;
+  font-weight: 600;
+}
+
+.btn.primary:hover {
+  background: #ffffff;
+}
+
+.btn.primary:active {
+  background: #d0d0d0;
+}
+
+/* Disabled has to stay readable. The browser default washes the label out to
+   near-invisibility, which on a sunlit screen is indistinguishable from a
+   button that has simply failed to render. Dimmer, never illegible: this holds
+   about 5:1 against its own background. */
+.btn:disabled,
+.btn[disabled],
+.btn.primary:disabled,
+.btn.primary[disabled] {
+  background: #1f1f1f;
+  color: #b0b0b0;
+  border-color: var(--line);
+  cursor: default;
+}
+
+.btn:disabled:hover,
+.btn[disabled]:hover,
+.btn.primary:disabled:hover,
+.btn.primary[disabled]:hover {
+  background: #1f1f1f;
 }
 
 .btn.wide {
@@ -86,13 +132,23 @@ h1 {
 
 .input {
   width: 100%;
-  padding: 16px;
+  padding: 16px 20px;
   font-size: 1.05rem;
-  border-radius: 10px;
+  border-radius: 999px;
   border: 1px solid var(--line);
-  background: #0b0b14;
+  background: #121212;
   color: var(--text);
   min-height: 58px;
+}
+
+.input::placeholder {
+  color: #8d8d8d;
+}
+
+.input:focus {
+  outline: none;
+  border-color: #3ea6ff;
+  background: #0d0d0d;
 }
 
 .row {
@@ -109,7 +165,7 @@ h1 {
 }
 
 .ok {
-  color: var(--ok);
+  color: #4ade80;
 }
 
 .warn {

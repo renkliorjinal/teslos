@@ -181,7 +181,7 @@ async function startVideoStream({ videoId, quality, startTime = 0, withAudio = t
       '-',
     );
 
-    return spawnFfmpeg(args, `video ${videoId}@${quality}p t=${startTime}`, 'video');
+    return spawnFfmpeg(args, `video ${videoId}@${quality}p t=${startTime}`, 'video', videoId);
   } finally {
     releaseSlot();
   }
@@ -243,7 +243,7 @@ async function startDirectStream({ videoId, quality, startTime = 0 }) {
       '-',
     );
 
-    return spawnFfmpeg(args, `direct ${videoId}@${quality}p t=${startTime} ${copyable ? 'copy' : 'transcode'}`, 'video');
+    return spawnFfmpeg(args, `direct ${videoId}@${quality}p t=${startTime} ${copyable ? 'copy' : 'transcode'}`, 'video', videoId);
   } finally {
     releaseSlot();
   }
@@ -274,12 +274,13 @@ async function startAudioStream({ videoId, startTime = 0 }) {
     '-',
   );
 
-  return spawnFfmpeg(args, `audio ${videoId} t=${startTime}`, 'audio');
+  return spawnFfmpeg(args, `audio ${videoId} t=${startTime}`, 'audio', videoId);
 }
 
-function spawnFfmpeg(args, label, pool) {
+function spawnFfmpeg(args, label, pool, videoId) {
   const proc = spawn(config.ffmpeg, args, { stdio: ['ignore', 'pipe', 'pipe'] });
   const group = pool === 'audio' ? liveAudio : live;
+  let produced = 0;
 
   const session = {
     proc,
@@ -306,7 +307,10 @@ function spawnFfmpeg(args, label, pool) {
   };
 
   // Doubles as the liveness signal the reaper reads.
-  proc.stdout.on('data', () => { session.lastOutput = Date.now(); });
+  proc.stdout.on('data', (chunk) => {
+    session.lastOutput = Date.now();
+    produced += chunk.length;
+  });
 
   let stderrTail = '';
   proc.stderr.on('data', (chunk) => {
@@ -318,6 +322,13 @@ function spawnFfmpeg(args, label, pool) {
     release();
     if (code !== 0 && !signal) {
       console.error(`[ffmpeg] ${label} exited ${code}: ${stderrTail.trim().split('\n').slice(-2).join(' ')}`);
+    }
+    // Nothing came out at all, or the CDN refused midway. Either way the media URL
+    // this was built from is not worth handing to the next attempt.
+    const refused = /40[0-9] |403|Forbidden|Server returned|Invalid data/i.test(stderrTail);
+    if (videoId && (produced === 0 || refused)) {
+      youtube.forgetResolve(videoId);
+      console.warn(`[ffmpeg] ${label} produced ${produced} bytes; dropped its cached URLs`);
     }
   });
 

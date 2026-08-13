@@ -233,6 +233,19 @@ async function resolveStreams(videoId, height, { requireAvc = false } = {}) {
   return streams;
 }
 
+// A URL that failed has to be thrown away, or the cache hands the same broken
+// one to every retry for the next five minutes. YouTube's media URLs can stop
+// working before they expire — a CDN node drops them, or the address they were
+// bound to is refused — and a reconnect that keeps replaying the same dead URL
+// looks from the driver's seat like the video itself being broken. Another
+// video plays, and the first one starts working again "by itself" once the
+// entry ages out, which is a miserable thing to debug.
+function forgetResolve(videoId) {
+  for (const key of resolveCache.keys()) {
+    if (key.startsWith(`${videoId}|`)) resolveCache.delete(key);
+  }
+}
+
 // The feeds a signed-in account exposes. Everything but `trending` needs the
 // cookie jar; without it YouTube serves a signed-out page and yt-dlp finds
 // nothing, which is worth telling the user rather than showing an empty grid.
@@ -295,6 +308,6 @@ async function search(query, limit = 12) {
 }
 
 module.exports = {
-  parseVideoId, watchUrl, getMetadata, resolveStreams, search,
+  parseVideoId, watchUrl, getMetadata, resolveStreams, forgetResolve, search,
   feed, feedNames, activeClient, CLIENT_CHAIN,
 };

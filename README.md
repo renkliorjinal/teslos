@@ -123,8 +123,15 @@ is exactly the case where the car is silent.
 
 ### Watch history, and picking up where you left off
 
-YouTube's own history needs the cookie jar; Google exposes it to no API, so a
-phone sign-in cannot produce it. teslos therefore keeps its own — every video
+Nothing played through teslos appears in YouTube's own history, and that is not
+an oversight. History is written by YouTube's player sending watch-progress
+pings to its own tracking endpoints; yt-dlp fetches media URLs and deliberately
+sends none of them, and this server streams those URLs itself. As far as YouTube
+is concerned no watch session ever happened. Writing to it would need the cookie
+jar plus undocumented internal endpoints — the Data API has no "mark as watched"
+call at any scope.
+
+So teslos keeps its own — every video
 played through it, with the position reached, in `history.json` under the state
 directory. That is worse than YouTube's in one way (it only knows what was
 watched here) and better in the way that matters in a car: it resumes.

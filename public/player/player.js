@@ -88,6 +88,7 @@
     lastDataAt: 0,
     lastFrameAt: 0,
     outageTries: 0,
+    retries: 0,
     outageAt: 0,
     reconnectTimer: null,
     progressPostedAt: 0,
@@ -313,7 +314,9 @@
       var title = document.createElement('b');
       title.textContent = item.title;
       var who = document.createElement('span');
-      who.textContent = item.uploader || '';
+      who.textContent = item.position > 0
+        ? (item.uploader ? item.uploader + ' · ' : '') + fmtTime(item.position) + '\'de kaldın'
+        : (item.uploader || '');
       meta.appendChild(title);
       meta.appendChild(who);
 
@@ -387,6 +390,7 @@
   }
 
   function openVideo(meta, autostart) {
+    state.retries = 0;
     state.videoId = meta.videoId;
     state.meta = meta;
     el.title.textContent = meta.title;
@@ -488,8 +492,17 @@
     el.playPause.textContent = '❚❚';
     setStatus('bağlanılıyor…');
 
-    if (isDirect()) startDirect();
-    else startCanvas();
+    if (isDirect()) {
+      startDirect();
+    } else {
+      // The canvas has no context yet, and an empty one paints white here. Cover
+      // it until frames arrive rather than showing a blank screen with a status
+      // line nobody is looking at.
+      el.recut.textContent = 'bağlanılıyor…';
+      el.recut.classList.add('on');
+      state.recutUntil = 0;
+      startCanvas();
+    }
   }
 
   // Re-cutting the picture to wherever the sound has got to. The soundtrack
@@ -729,6 +742,7 @@
         // that stays open but stops delivering is what a lost link looks like.
         state.lastDataAt = Date.now();
         state.outageTries = 0;
+        state.retries = 0;
         if (previous) previous.call(socket, event);
       };
     })(0);
@@ -924,6 +938,8 @@
     })();
   }
 
+  var MAX_RETRIES = 4;
+
   function handleClose(event) {
     if (!state.playing) return;
 
@@ -961,8 +977,32 @@
         resyncPicture();
         return;
       }
+
+      // A stream that has never delivered a byte will not start on the fifth
+      // attempt either. Retrying forever behind a "sürdürülüyor…" that never
+      // resolves is the worst of both — no picture and no explanation.
+      state.retries += 1;
+      if (state.retries > MAX_RETRIES) {
+        giveUp();
+        return;
+      }
       start(position);
     }, 1500);
+  }
+
+  function giveUp() {
+    state.playing = false;
+    el.playPause.textContent = '▶';
+    el.recut.classList.remove('on');
+    setStatus('başlatılamadı');
+    toast('Bu video başlatılamıyor. Sunucu birkaç kez denedi ve hiç görüntü gelmedi.', {
+      action: 'TEKRAR DENE',
+      onAction: function () {
+        state.retries = 0;
+        state.playing = true;
+        start(state.waitingAt || state.startOffset);
+      },
+    });
   }
 
   function handleEnded() {
