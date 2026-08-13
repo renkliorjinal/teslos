@@ -329,8 +329,11 @@
       // Our own resume logic reopens at the *current* position; JSMpeg's
       // reconnect would reopen the original ?t= and jump backwards.
       reconnectInterval: 0,
-      videoBufferSize: 1024 * 1024,
-      audioBufferSize: 256 * 1024,
+      // The server paces at 1x, so the client never gets ahead and has only
+      // what has arrived to play from. Room to absorb a few seconds of jitter
+      // is the difference between a wobbly link and a stuttering picture.
+      videoBufferSize: 4 * 1024 * 1024,
+      audioBufferSize: 512 * 1024,
       onSourceEstablished: function () { setStatus('akıyor'); },
       onStalled: function () { setStatus('tampon bekleniyor…'); },
       onEnded: handleEnded
@@ -407,11 +410,45 @@
 
   // ------------------------------------------------------------------ audio
 
+  // Opening the player from a ?v= link starts playback with no user gesture at
+  // all, and no browser will let audio out until there has been one. Both audio
+  // paths are therefore silent for reasons that have nothing to do with the
+  // car, which is worth distinguishing from the ones that do.
+  var gestureSeen = false;
+
+  function unlockAudio() {
+    var ctx = state.player && state.player.audioOut && state.player.audioOut.context;
+    if (ctx && ctx.state === 'suspended' && ctx.resume) ctx.resume();
+
+    if (state.audioMode === 'separate' && el.audio.getAttribute('src') && el.audio.paused) {
+      el.audio.play().catch(function () { /* the hint below already covers it */ });
+    }
+    if (isDirect() && state.playing && el.video.paused) {
+      el.video.play().catch(function () { /* likewise */ });
+    }
+    if (el.toast.textContent.indexOf('dokun') !== -1) el.toast.style.display = 'none';
+  }
+
+  ['pointerdown', 'click', 'touchstart', 'keydown'].forEach(function (name) {
+    document.addEventListener(name, function () {
+      if (gestureSeen) return;
+      gestureSeen = true;
+      unlockAudio();
+    });
+  });
+
   function armAudioWatchdog() {
     state.watchdog = setTimeout(function () {
       var out = state.player && state.player.audioOut;
       var ctx = out && out.context;
       if (ctx && ctx.state === 'running') return;
+
+      // Without a gesture the context cannot start no matter which path is
+      // chosen, so switching would swap one silence for another.
+      if (!gestureSeen) {
+        toast('Ses için ekrana bir kez dokun');
+        return;
+      }
 
       // WebAudio is suppressed on this firmware/drive state. The <audio>
       // element path is the documented survivor, so move over to it.

@@ -105,13 +105,38 @@ wss.on('connection', async (ws, req) => {
     return;
   }
 
+  // Backpressure by pausing the source, not by discarding from the middle of
+  // it. A transport stream with a hole in it does not resynchronise cleanly —
+  // the decoder carries the damage to the next intra frame — and on a jittery
+  // link that is a permanent stutter rather than a brief glitch. ffmpeg is
+  // pacing at 1x anyway, so a short pause costs nothing but a moment of buffer.
+  const HIGH_WATER = 2 * 1024 * 1024;
+  const LOW_WATER = 512 * 1024;
+  let drainTimer = null;
+
   session.stdout.on('data', (chunk) => {
     if (ws.readyState !== ws.OPEN) return;
-    // Drop rather than queue when the car's link falls behind. An unbounded
-    // send buffer would show up as ever-growing latency instead of a brief
-    // glitch, and MPEG1 recovers on the next intra frame a second later.
-    if (ws.bufferedAmount > 4 * 1024 * 1024) return;
     ws.send(chunk);
+
+    if (ws.bufferedAmount > HIGH_WATER && !drainTimer) {
+      session.stdout.pause();
+      drainTimer = setInterval(() => {
+        if (ws.readyState !== ws.OPEN) {
+          clearInterval(drainTimer);
+          drainTimer = null;
+          return;
+        }
+        if (ws.bufferedAmount < LOW_WATER) {
+          clearInterval(drainTimer);
+          drainTimer = null;
+          session.stdout.resume();
+        }
+      }, 100);
+    }
+  });
+
+  ws.on('close', () => {
+    if (drainTimer) clearInterval(drainTimer);
   });
 
   session.proc.on('close', () => {
