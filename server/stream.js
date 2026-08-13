@@ -104,7 +104,18 @@ async function startVideoStream({ videoId, quality, startTime = 0, withAudio = t
  * a pipe can never reach, so the browser would wait forever before painting.
  */
 async function startDirectStream({ videoId, quality, startTime = 0 }) {
-  const streams = await youtube.resolveStreams(videoId, quality, { preferAvc: true });
+  // Copying is free but only legal when YouTube already has an H.264 rendition
+  // at this height. When it does not, transcoding is the honest cost of still
+  // handing the car something it can decode.
+  let streams;
+  let copyable = true;
+  try {
+    streams = await youtube.resolveStreams(videoId, quality, { requireAvc: true });
+  } catch (err) {
+    copyable = false;
+    streams = await youtube.resolveStreams(videoId, quality);
+    console.log(`[direct] ${videoId}: no H.264 at ${quality}p, transcoding instead`);
+  }
 
   const args = ['-hide_banner', '-loglevel', 'error'];
   args.push(...inputArgs(streams.video, startTime));
@@ -113,14 +124,29 @@ async function startDirectStream({ videoId, quality, startTime = 0 }) {
   args.push('-map', '0:v:0');
   args.push('-map', streams.audio ? '1:a:0' : '0:a:0?');
 
+  if (copyable) {
+    args.push('-c', 'copy');
+  } else {
+    const preset = config.QUALITY[quality] || config.QUALITY[config.DEFAULT_QUALITY];
+    args.push(
+      '-c:v', 'libx264', '-preset', 'veryfast', '-profile:v', 'main',
+      '-b:v', preset.videoBitrate, '-maxrate', preset.videoBitrate,
+      '-bufsize', preset.videoBitrate, '-pix_fmt', 'yuv420p',
+      '-vf', `scale=${preset.scale}`,
+      '-c:a', 'aac', '-b:a', '128k',
+    );
+  }
+
   args.push(
-    '-c', 'copy',
     '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
+    // A source with a long GOP would otherwise emit one huge fragment at a
+    // time, and nothing paints until each is complete.
+    '-frag_duration', '1000000',
     '-f', 'mp4',
     '-',
   );
 
-  return spawnFfmpeg(args, `direct ${videoId}@${quality}p t=${startTime}`);
+  return spawnFfmpeg(args, `direct ${videoId}@${quality}p t=${startTime} ${copyable ? 'copy' : 'transcode'}`);
 }
 
 /**
