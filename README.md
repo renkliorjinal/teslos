@@ -131,9 +131,8 @@ is concerned no watch session ever happened. Writing to it would need the cookie
 jar plus undocumented internal endpoints — the Data API has no "mark as watched"
 call at any scope.
 
-So teslos keeps its own — every video
-played through it, with the position reached, in `history.json` under the state
-directory. That is worse than YouTube's in one way (it only knows what was
+So teslos keeps its own: every video played through it, with the position
+reached, in `history.json` under the state directory. That is worse than YouTube's in one way (it only knows what was
 watched here) and better in the way that matters in a car: it resumes.
 
 Progress is posted every few seconds rather than at the end, because the end is
@@ -241,19 +240,20 @@ journalctl -u teslos -f
 
 Two different things can be lost, and only one of them is in git.
 
-**The code** is. Every working state is a commit, and `calisan` is a tag kept on
-the last one confirmed working in the car. To go back to it:
+**The code** is. `/api/health` reports `revision` and the server logs it at
+startup, so which commit is in the car is never a guess — note it down whenever
+playback is confirmed good, and that is the rollback target:
 
 ```bash
 cd /opt/teslos
-sudo git fetch --tags
-sudo git checkout calisan
+sudo git log --oneline -10        # the recent versions
+sudo git checkout <commit>        # the one that worked
 sudo systemctl restart teslos
 ```
 
-`/api/health` reports `revision`, and the server logs it at startup, so what is
-actually running is never a guess. To come back to the branch afterwards:
-`sudo git checkout claude/tesla-video-playback-7tkyzo`.
+Back to the current version afterwards:
+`sudo git checkout claude/tesla-video-playback-7tkyzo`. Nothing is lost by
+checking out an old commit — every version is still there.
 
 **The state** is not, and cannot be re-created: the YouTube cookie jar, the
 Google client and its refresh token, and the watch history with every resume
