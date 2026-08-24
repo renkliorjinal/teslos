@@ -234,6 +234,7 @@ wss.on('connection', async (ws, req) => {
 
 server.listen(config.port, config.bind, () => {
   console.log(`teslos listening on http://${config.bind}:${config.port}`);
+  console.log(`  running: ${config.revision}`);
   console.log(`  static: ${config.publicDir}`);
   console.log(`  ffmpeg: ${config.ffmpeg}   yt-dlp: ${config.ytDlp}`);
   console.log(`  max concurrent sessions: ${config.maxSessions}`);

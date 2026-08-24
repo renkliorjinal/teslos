@@ -237,6 +237,39 @@ sudo systemctl daemon-reload && sudo systemctl enable --now teslos
 journalctl -u teslos -f
 ```
 
+### Backups, and getting back to a working version
+
+Two different things can be lost, and only one of them is in git.
+
+**The code** is. Every working state is a commit, and `calisan` is a tag kept on
+the last one confirmed working in the car. To go back to it:
+
+```bash
+cd /opt/teslos
+sudo git fetch --tags
+sudo git checkout calisan
+sudo systemctl restart teslos
+```
+
+`/api/health` reports `revision`, and the server logs it at startup, so what is
+actually running is never a guess. To come back to the branch afterwards:
+`sudo git checkout claude/tesla-video-playback-7tkyzo`.
+
+**The state** is not, and cannot be re-created: the YouTube cookie jar, the
+Google client and its refresh token, and the watch history with every resume
+position. Signing in again is a ten-step chore on a phone at the roadside.
+
+```bash
+sudo bash deploy/backup.sh                 # take one, keeps the last 10
+sudo bash deploy/backup.sh --list          # what is there
+sudo bash deploy/backup.sh --restore FILE  # put one back
+```
+
+Backups land in `/var/backups/teslos`, owner-only, because they contain a live
+session and a refresh token. Restoring stops the service first — it holds those
+files open — and sets the current state aside before overwriting, so a restore
+is itself reversible. Worth running before every `git pull`.
+
 ### Getting past YouTube's bot check
 
 YouTube answers datacenter addresses with *"Sign in to confirm you're not a

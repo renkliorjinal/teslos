@@ -104,6 +104,24 @@ function explainWriteFailure(err) {
     + '&& sudo systemctl daemon-reload && sudo systemctl restart teslos';
 }
 
+// Which commit is actually running. Read from .git directly rather than by
+// shelling out: the service user cannot always run git against a checkout it
+// does not own, and this has to work when it matters — deciding whether the
+// thing in the car is the version that was known to work.
+function revision() {
+  try {
+    const head = fs.readFileSync(path.join(__dirname, '..', '.git', 'HEAD'), 'utf8').trim();
+    const ref = head.startsWith('ref: ') ? head.slice(5) : null;
+    if (!ref) return head.slice(0, 8);
+    const sha = fs.readFileSync(path.join(__dirname, '..', '.git', ref), 'utf8').trim();
+    return `${ref.replace('refs/heads/', '')}@${sha.slice(0, 8)}`;
+  } catch {
+    // Packed refs, a tarball deploy, a shallow clone — none of them worth
+    // failing a health check over.
+    return 'unknown';
+  }
+}
+
 // Credentials in a proxy URL must never reach a log line or an API response.
 function maskProxy(url) {
   if (!url) return '';
@@ -137,6 +155,7 @@ module.exports = {
   proxyMedia: Boolean(proxy) && process.env.PROXY_MEDIA !== '0',
   maskProxy,
   explainWriteFailure,
+  revision: revision(),
   maxSessions: Number(process.env.MAX_SESSIONS) || 3,
   publicDir: path.join(__dirname, '..', 'public'),
   reportsDir: path.join(stateDir, 'probe-reports'),

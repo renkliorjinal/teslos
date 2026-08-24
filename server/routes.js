@@ -19,6 +19,7 @@ function fail(res, status, message) {
 router.get('/health', (req, res) => {
   res.json({
     ok: true,
+    revision: config.revision,
     sessions: stream.sessionCount(),
     maxSessions: config.maxSessions,
     defaultQuality: config.DEFAULT_QUALITY,
