@@ -176,8 +176,13 @@ step "Installing systemd service"
 NODE_BIN="$(command -v node)"
 sed "s|^ExecStart=.*|ExecStart=$NODE_BIN server/index.js|" \
   deploy/teslos.service > /etc/systemd/system/teslos.service
+# Keeps yt-dlp current on its own. YouTube breaks it every few weeks, and the
+# failure looks like the whole project dying rather than one dependency ageing.
+cp deploy/yt-dlp-update.service deploy/yt-dlp-update.timer /etc/systemd/system/
+
 systemctl daemon-reload
 systemctl enable --now teslos
+systemctl enable --now yt-dlp-update.timer
 sleep 2
 systemctl is-active --quiet teslos && echo "teslos is running" || {
   echo "teslos failed to start:" >&2

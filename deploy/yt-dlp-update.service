@@ -1,0 +1,25 @@
+# /etc/systemd/system/yt-dlp-update.service
+#
+# YouTube changes something every few weeks and yt-dlp breaks until it is
+# updated. Left alone, the first symptom is every video failing at once on a
+# morning when nothing was touched — which is a miserable thing to diagnose from
+# a car.
+#
+# Nothing needs restarting afterwards: yt-dlp is spawned per request, so the new
+# binary is in use from the next video onwards.
+
+[Unit]
+Description=Keep yt-dlp current, since YouTube keeps breaking it
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/yt-dlp -U
+# A failed update is not an emergency — the old binary still works until
+# YouTube's next change, and the timer will try again next week.
+SuccessExitStatus=0 100
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target

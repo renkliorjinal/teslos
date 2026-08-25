@@ -56,8 +56,29 @@ if (!ffmpegVersion) {
 
 // yt-dlp
 const ytDlpVersion = tryExec(config.ytDlp, ['--version']);
-if (ytDlpVersion) pass('yt-dlp', ytDlpVersion.trim());
-else fail('yt-dlp', `not runnable as "${config.ytDlp}"`);
+if (!ytDlpVersion) {
+  fail('yt-dlp', `not runnable as "${config.ytDlp}"`);
+} else {
+  const version = ytDlpVersion.trim();
+  // Versions are release dates: 2026.08.01, sometimes with a build suffix.
+  // An old one is the single likeliest reason for everything failing at once,
+  // and it is invisible unless something says so.
+  const stamp = /^(\d{4})\.(\d{2})\.(\d{2})/.exec(version);
+  const ageDays = stamp
+    ? Math.floor((Date.now() - Date.UTC(+stamp[1], +stamp[2] - 1, +stamp[3])) / 86400000)
+    : null;
+
+  if (ageDays !== null && ageDays > 60) {
+    fail('yt-dlp', `${version} — ${ageDays} days old`);
+    console.log('  YouTube changes break yt-dlp every few weeks. Update it with');
+    console.log('  `sudo yt-dlp -U`, and enable the weekly timer so this stops');
+    console.log('  happening: sudo systemctl enable --now yt-dlp-update.timer');
+  } else if (ageDays !== null) {
+    pass('yt-dlp', `${version} (${ageDays} days old)`);
+  } else {
+    pass('yt-dlp', version);
+  }
+}
 
 if (config.setupToken) {
   const host = config.publicHost || 'your-host';

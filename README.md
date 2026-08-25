@@ -236,6 +236,25 @@ sudo systemctl daemon-reload && sudo systemctl enable --now teslos
 journalctl -u teslos -f
 ```
 
+### Keeping yt-dlp current
+
+YouTube changes something every few weeks and yt-dlp stops working until it is
+updated. The failure is total and gives no hint of its cause: every video fails
+at once, on a morning when nothing was touched. A weekly timer removes the whole
+category:
+
+```bash
+sudo cp deploy/yt-dlp-update.{service,timer} /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now yt-dlp-update.timer
+systemctl list-timers yt-dlp-update.timer
+```
+
+`setup.sh` installs it on a fresh box. Nothing needs restarting after an update
+— yt-dlp is spawned per request, so the new binary is in use from the next video
+onwards. `npm run doctor` reports the version's age and fails the check past
+sixty days.
+
 ### Backups, and getting back to a working version
 
 Two different things can be lost, and only one of them is in git.

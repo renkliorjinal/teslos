@@ -1,0 +1,21 @@
+# /etc/systemd/system/yt-dlp-update.timer
+#
+#   sudo cp deploy/yt-dlp-update.{service,timer} /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now yt-dlp-update.timer
+#   systemctl list-timers yt-dlp-update.timer
+
+[Unit]
+Description=Weekly yt-dlp update
+
+[Timer]
+OnCalendar=weekly
+# A missed window — the droplet was down, or rebooting — is made up at the next
+# opportunity rather than skipped until the following week.
+Persistent=true
+# Every install of this asking GitHub at the same instant would be rude, and the
+# exact minute makes no difference to anything.
+RandomizedDelaySec=2h
+
+[Install]
+WantedBy=timers.target
