@@ -8,7 +8,9 @@
     "start": "node server/index.js",
     "dev": "node --watch server/index.js",
     "doctor": "node server/doctor.js",
-    "report": "node server/report.js"
+    "report": "node server/report.js",
+    "test": "node test/all.js",
+    "test:fast": "node test/all.js --fast"
   },
   "engines": {
     "node": ">=18"
@@ -17,5 +19,8 @@
     "express": "^4.19.2",
     "ws": "^8.18.0"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "devDependencies": {
+    "playwright": "^1.62.1"
+  }
 }

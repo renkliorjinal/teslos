@@ -153,9 +153,14 @@
   /* Replacing the canvas stream tears down its WebGL context, and what the car
      paints in the gap is not ours to choose — it came out white, which reads as
      a fault rather than a pause. An opaque cover makes the gap deliberate. */
-  .recut { position: absolute; inset: 0; z-index: 15; background: #000;
+  .recut { position: absolute; inset: 0; z-index: 5; background: #000;
            display: none; align-items: center; justify-content: center;
-           gap: 14px; color: var(--muted); font-size: 1rem; }
+           gap: 14px; color: var(--muted); font-size: 1rem;
+           /* Below the control bar and deaf to touch. It is a notice, not a
+              dialogue: an outage can hold it up indefinitely, and swallowing
+              taps would lock the driver out of pause, quality and the picker
+              for as long as it lasted. */
+           pointer-events: none; }
   .recut.on { display: flex; }
   .recut::before { content: ''; width: 26px; height: 26px; border-radius: 50%;
                    border: 3px solid rgba(255,255,255,.22); border-top-color: var(--brand);

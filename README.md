@@ -236,6 +236,36 @@ sudo systemctl daemon-reload && sudo systemctl enable --now teslos
 journalctl -u teslos -f
 ```
 
+### Tests
+
+```bash
+npm test              # everything this machine can run
+npm run test:fast     # only the suites that need no browser
+node test/all.js sound resume     # just those two
+```
+
+Twelve suites, each a separate process on its own port with its own state
+directory. They start the **real server in-process against real ffmpeg** and
+replace only yt-dlp, with a stub pointing at a locally served clip. That is
+deliberate: every bug this project has actually had lived in the seams —
+pacing, buffering, sync, the WebSocket, the audio graph — and a suite that
+mocked the seams would have caught none of them.
+
+The browser suites need `npm i` (Playwright is a devDependency) and
+`npx playwright install chromium`. Without them `npm test` skips those and says
+so rather than failing. `PLAYWRIGHT_CHROMIUM` points at a browser kept
+elsewhere; `FFMPEG` at an ffmpeg that is not on `PATH`.
+
+Some of what they hold in place, all of it learned the hard way:
+
+- sound measured off the WebAudio graph with an `AnalyserNode`, not inferred
+  from a counter that keeps climbing through silence
+- the soundtrack never restarted to chase sync, because that is what hands the
+  car's media source back and forth
+- the client's buffer settling instead of overrunning the decoder's ring
+- contrast of every control in every state, disabled included, at 4.5:1
+- a lost link stopping playback rather than letting the sound run on alone
+
 ### Keeping yt-dlp current
 
 YouTube changes something every few weeks and yt-dlp stops working until it is
