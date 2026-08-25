@@ -300,9 +300,34 @@ router.get('/testclip.mp4', (req, res) => {
 // arrives as Annex-B with access unit delimiters, so frame boundaries are
 // trivial to find; VP8 arrives as IVF, whose per-frame headers carry sizes.
 // Two codecs because a browser may well have WebCodecs without H.264.
+// Defaults reproduce the original 320x180@15 clip exactly, because the existing
+// probe answers a different question with it — "does WebCodecs still decode once
+// the car leaves Park" — and that answer should not move.
+//
+// The parameters exist for the other question: how fast can this chip decode
+// H.264, which decides whether the transcode on the server can be dropped
+// altogether. That needs a realistic frame size and realistic content: a smooth
+// test pattern compresses to almost nothing and decodes far faster than video
+// anyone would watch.
 router.get('/testcodec', (req, res) => {
-  const source = ['-f', 'lavfi', '-i', 'testsrc=size=320x180:rate=15:duration=3'];
+  const height = Math.min(1080, Math.max(180, Number(req.query.h) || 180));
+  // Kept even, since yuv420p cannot represent an odd dimension.
+  const width = Math.round((height * 16) / 9 / 2) * 2;
+  const fps = Math.min(60, Math.max(5, Number(req.query.fps) || 15));
+  const seconds = Math.min(10, Math.max(1, Number(req.query.d) || 3));
+
+  const source = ['-f', 'lavfi', '-i',
+    `testsrc=size=${width}x${height}:rate=${fps}:duration=${seconds}`];
   const args = ['-hide_banner', '-loglevel', 'error', ...source];
+  if (req.query.noise === '1') args.push('-vf', 'noise=alls=40:allf=t+u');
+
+  // Uncapped, four seconds of noisy 720p came to 38 MB — a minute of a mobile
+  // link and a chunk of someone's data allowance, to measure something a
+  // realistic bitrate measures just as well. YouTube sends 720p at about this.
+  const bitrate = req.query.b || (height >= 700 ? '2500k' : height >= 400 ? '1200k' : '');
+  if (bitrate && req.query.c !== 'vp8') {
+    args.push('-b:v', bitrate, '-maxrate', bitrate, '-bufsize', String(parseInt(bitrate, 10) * 2) + 'k');
+  }
 
   if (req.query.c === 'vp8') {
     args.push(
@@ -312,7 +337,7 @@ router.get('/testcodec', (req, res) => {
   } else {
     args.push(
       '-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'zerolatency',
-      '-profile:v', 'baseline', '-level', '3.0', '-bf', '0', '-g', '15',
+      '-profile:v', 'baseline', '-level', '4.0', '-bf', '0', '-g', String(fps),
       '-pix_fmt', 'yuv420p',
       // Access unit delimiters turn frame splitting into a start-code scan.
       '-bsf:v', 'h264_metadata=aud=insert',

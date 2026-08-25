@@ -89,6 +89,22 @@
     </div>
 
     <div class="panel">
+      <h2>Canlı · 720p30 çözme kapasitesi</h2>
+      <canvas id="capCanvas" width="320" height="180"></canvas>
+      <div class="big" id="capFps">—</div>
+      <div class="kv"><span class="k">Ölçülen en yüksek</span><span class="v" id="capPeak">—</span></div>
+      <div class="kv"><span class="k">Çözülen kare</span><span class="v" id="capFrames">—</span></div>
+      <div class="kv"><span class="k">Durum</span><span class="v" id="capState">bekliyor</span></div>
+      <button class="btn wide" id="btnCap" style="margin-top:10px">720p30 ÖLÇÜMÜNÜ BAŞLAT</button>
+      <div class="verdict" id="capVerdict">Bu sayı 30'un üstündeyse sunucudaki dönüştürmeyi tamamen bırakabiliriz</div>
+      <p class="hint">Yukarıdaki test "çözebiliyor mu" diye soruyor; bu "ne kadar
+         hızlı" diye soruyor. Kareler kendi hızlarında değil, çözücünün kabul
+         ettiği kadar hızlı besleniyor — yani çıkan sayı tavan. 30'un altındaysa
+         H.264'e geçmek 720p'de işe yaramaz. 1,3 MB'lık bir örnek indirir, o
+         yüzden kendiliğinden başlamaz.</p>
+    </div>
+
+    <div class="panel">
       <h2>Ses çıkışı</h2>
       <button class="btn wide" id="btnWebAudio">WEBAUDIO TONU ÇAL (3 sn)</button>
       <div class="kv"><span class="k">AudioContext state</span><span class="v" id="acState">—</span></div>
@@ -486,6 +502,253 @@
     }
   })();
 
+// Splitting H.264 into frames, used by both WebCodecs tests below — the
+// yes/no one and the throughput one. An access unit delimiter starts each
+// frame, and an IDR or SPS inside one makes it a keyframe.
+  function hasIdr(au) {
+    for (var i = 0; i < au.length - 4; i++) {
+      var sc4 = au[i] === 0 && au[i + 1] === 0 && au[i + 2] === 0 && au[i + 3] === 1;
+      var sc3 = !sc4 && au[i] === 0 && au[i + 1] === 0 && au[i + 2] === 1;
+      if (!sc3 && !sc4) continue;
+      var t = au[i + (sc4 ? 4 : 3)] & 0x1f;
+      if (t === 5 || t === 7) return true;
+      i += sc4 ? 3 : 2;
+    }
+    return false;
+  }
+
+  // IVF: 32-byte file header, then a 12-byte header per frame carrying its
+  // size. The header's frame count is unreliable over a pipe, so it is
+  // ignored and the file is walked instead.
+  function splitIvf(buf) {
+    var frames = [];
+    var view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+    var o = 32;
+    while (o + 12 <= buf.length) {
+      var size = view.getUint32(o, true);
+      o += 12;
+      if (o + size > buf.length) break;
+      var data = buf.subarray(o, o + size);
+      frames.push({ data: data, key: (data[0] & 1) === 0 });
+      o += size;
+    }
+    return frames;
+  }
+
+function splitAnnexB(buf) {
+    var starts = [];
+    for (var i = 0; i < buf.length - 4; i++) {
+      var sc4 = buf[i] === 0 && buf[i + 1] === 0 && buf[i + 2] === 0 && buf[i + 3] === 1;
+      var sc3 = !sc4 && buf[i] === 0 && buf[i + 1] === 0 && buf[i + 2] === 1;
+      if (!sc3 && !sc4) continue;
+      if ((buf[i + (sc4 ? 4 : 3)] & 0x1f) === 9) starts.push(i);
+      i += sc4 ? 3 : 2;
+    }
+    return starts.map(function (s, n) {
+      var chunk = buf.subarray(s, starts[n + 1] === undefined ? buf.length : starts[n + 1]);
+      return { data: chunk, key: hasIdr(chunk) };
+    });
+  }
+
+  /**
+   * How fast, rather than whether.
+   *
+   * The test below answers a yes/no question — does WebCodecs keep decoding
+   * once the car leaves Park — and paces frames at the clip's own rate to do
+   * it, so its fps figure is the clip's, not the chip's. Replacing the server's
+   * MPEG1 transcode with H.264 decoded here needs a different number: the
+   * ceiling. Frames are therefore fed as fast as the decoder will take them,
+   * with a real 720p30 clip, and what comes out is what this hardware can
+   * actually sustain.
+   *
+   * Started by hand because it downloads about 1.3 MB.
+   */
+  (function () {
+    var canvas = $('capCanvas');
+    var ctx = canvas.getContext('2d');
+    var running = false;
+
+    function state(text, cls) {
+      $('capState').textContent = text;
+      $('capState').className = 'v ' + (cls || '');
+      report.live.capacityState = text;
+    }
+
+    $('btnCap').addEventListener('click', function () {
+      if (running) return;
+      if (typeof VideoDecoder === 'undefined') {
+        state('VideoDecoder yok', 'fail');
+        return;
+      }
+      running = true;
+      $('btnCap').disabled = true;
+      run();
+    });
+
+    function giveUp(text) {
+      state(text, 'fail');
+      $('btnCap').disabled = false;
+      running = false;
+    }
+
+    // The codec is chosen before the clip is fetched, because which clip to ask
+    // for depends on it.
+    function fetchFor(candidate) {
+      state('örnek indiriliyor (~1,3 MB)…');
+      var started = performance.now();
+      var url = '/api/testcodec?h=720&fps=30&d=4&noise=1'
+        + (candidate.kind === 'vp8' ? '&c=vp8' : '');
+
+      fetch(url)
+        .then(function (r) { return r.arrayBuffer(); })
+        .then(function (ab) {
+          report.live.capacityClipKB = Math.round(ab.byteLength / 1024);
+          report.live.capacityFetchMs = Math.round(performance.now() - started);
+          var buf = new Uint8Array(ab);
+          var frames = candidate.kind === 'vp8' ? splitIvf(buf) : splitAnnexB(buf);
+          if (!frames.length) return giveUp('örnek çözümlenemedi');
+          report.live.capacityFrames720 = frames.length;
+          play(candidate, frames);
+        })
+        .catch(function (err) { giveUp('indirme hatası: ' + err.message); });
+    }
+
+    function run() {
+      pickCodec(0);
+    }
+
+    // 4.0 covers 720p; the level in the yes/no test is 3.0, which does not.
+    // VP8 last: a Chromium built without the licensed codecs has no H.264 at
+    // all, and a number from the codec it does have beats no number.
+    var CODECS = [
+      { codec: 'avc1.42C028', kind: 'h264' },
+      { codec: 'avc1.42E028', kind: 'h264' },
+      { codec: 'avc1.4D4028', kind: 'h264' },
+      { codec: 'avc1.42C01E', kind: 'h264' },
+      { codec: 'vp8', kind: 'vp8' },
+    ];
+
+    function pickCodec(i) {
+      if (i >= CODECS.length) {
+        $('capVerdict').textContent = '720p çözülemiyor — MPEG1 yolunda kalıyoruz';
+        return giveUp('720p için kabul edilen codec yok');
+      }
+      var candidate = CODECS[i];
+      VideoDecoder.isConfigSupported({ codec: candidate.codec,
+        codedWidth: 1280, codedHeight: 720 })
+        .then(function (support) {
+          if (!support.supported) return pickCodec(i + 1);
+          report.live.capacityCodec = candidate.codec;
+          fetchFor(candidate);
+        })
+        .catch(function () { pickCodec(i + 1); });
+    }
+
+    function play(candidate, frames) {
+      var decoded = 0;
+      var windowFrames = 0;
+      var peak = 0;
+      var last = performance.now();
+      var deadline = last + 8000;
+      var index = 0;
+      var stamp = 0;
+
+      var decoder = new VideoDecoder({
+        output: function (frame) {
+          decoded += 1;
+          windowFrames += 1;
+          // Drawn so the picture is visibly real, and scaled down so the paint
+          // is not what is being measured.
+          try {
+            ctx.drawImage(frame, 0, 0, canvas.width, canvas.height);
+          } catch (e) {
+            // Frame already closed.
+          }
+          frame.close();
+        },
+        error: function (err) {
+          report.live.capacityError = err.message;
+          giveUp('decoder hatası: ' + err.message);
+        },
+      });
+      decoder.configure({ codec: candidate.codec, codedWidth: 1280, codedHeight: 720,
+        optimizeForLatency: true });
+      state('ölçülüyor…', 'ok');
+
+      // No pacing at all: the queue is kept just full enough that the decoder
+      // never waits, and the frame rate that results is the ceiling. Pacing
+      // frames at the clip's own rate — which the yes/no test does — would only
+      // ever report the clip's rate back.
+      function pump() {
+        if (!decoder || decoder.state !== 'configured') return;
+
+        var now = performance.now();
+        if (now - last >= 1000) {
+          var fps = Math.round((windowFrames * 1000) / (now - last));
+          if (fps > peak) peak = fps;
+          $('capFps').textContent = fps;
+          $('capPeak').textContent = peak + ' fps';
+          $('capFrames').textContent = decoded;
+          windowFrames = 0;
+          last = now;
+        }
+
+        if (now >= deadline) return finish(peak, decoded);
+
+        while (decoder.decodeQueueSize < 6) {
+          if (index >= frames.length) index = 0;
+          var frame = frames[index];
+          // Each pass has to start on a keyframe, or the decoder is handed
+          // deltas with nothing to apply them to.
+          if (index === 0 && !frame.key) {
+            var k = -1;
+            for (var n = 0; n < frames.length; n++) {
+              if (frames[n].key) { k = n; break; }
+            }
+            if (k < 0) break;
+            index = k;
+            frame = frames[index];
+          }
+          decoder.decode(new EncodedVideoChunk({
+            type: frame.key ? 'key' : 'delta',
+            timestamp: stamp,
+            data: frame.data,
+          }));
+          stamp += 33333;
+          index += 1;
+        }
+        requestAnimationFrame(pump);
+      }
+
+      function finish(peakFps, total) {
+        report.live.capacityPeakFps = peakFps;
+        report.live.capacityDecoded = total;
+        state('bitti', peakFps >= 30 ? 'ok' : 'warn');
+        $('btnCap').disabled = false;
+        running = false;
+
+        var what = candidate.kind === 'vp8' ? ' (VP8 ile ölçüldü)' : '';
+        if (peakFps >= 45) {
+          $('capVerdict').textContent = peakFps + ' fps' + what
+            + ' — rahatça yeter, sunucudaki dönüştürme tamamen kaldırılabilir';
+        } else if (peakFps >= 30) {
+          $('capVerdict').textContent = peakFps + ' fps' + what
+            + ' — 720p30 için yeterli, ama pay az';
+        } else {
+          $('capVerdict').textContent = peakFps + ' fps' + what
+            + ' — 720p30 için yetmez; 480p denenebilir ya da MPEG1 kalır';
+        }
+        try {
+          decoder.close();
+        } catch (e) {
+          // Already closed.
+        }
+      }
+
+      pump();
+    }
+  })();
+
   // ---------- live WebCodecs decode ----------
   //
   // Knowing VideoDecoder exists is not the same as knowing it still decodes
@@ -523,50 +786,11 @@
 
     // Annex-B: every access unit begins with a delimiter NAL, so a start-code
     // scan for type 9 gives exact frame boundaries.
-    function splitAnnexB(buf) {
-      var starts = [];
-      for (var i = 0; i < buf.length - 4; i++) {
-        var sc4 = buf[i] === 0 && buf[i + 1] === 0 && buf[i + 2] === 0 && buf[i + 3] === 1;
-        var sc3 = !sc4 && buf[i] === 0 && buf[i + 1] === 0 && buf[i + 2] === 1;
-        if (!sc3 && !sc4) continue;
-        if ((buf[i + (sc4 ? 4 : 3)] & 0x1f) === 9) starts.push(i);
-        i += sc4 ? 3 : 2;
-      }
-      return starts.map(function (s, n) {
-        var chunk = buf.subarray(s, starts[n + 1] === undefined ? buf.length : starts[n + 1]);
-        return { data: chunk, key: hasIdr(chunk) };
-      });
-    }
 
-    function hasIdr(au) {
-      for (var i = 0; i < au.length - 4; i++) {
-        var sc4 = au[i] === 0 && au[i + 1] === 0 && au[i + 2] === 0 && au[i + 3] === 1;
-        var sc3 = !sc4 && au[i] === 0 && au[i + 1] === 0 && au[i + 2] === 1;
-        if (!sc3 && !sc4) continue;
-        var t = au[i + (sc4 ? 4 : 3)] & 0x1f;
-        if (t === 5 || t === 7) return true;
-        i += sc4 ? 3 : 2;
-      }
-      return false;
-    }
 
-    // IVF: 32-byte file header, then a 12-byte header per frame carrying its
-    // size. The header's frame count is unreliable over a pipe, so it is
-    // ignored and the file is walked instead.
-    function splitIvf(buf) {
-      var frames = [];
-      var view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
-      var o = 32;
-      while (o + 12 <= buf.length) {
-        var size = view.getUint32(o, true);
-        o += 12;
-        if (o + size > buf.length) break;
-        var data = buf.subarray(o, o + size);
-        frames.push({ data: data, key: (data[0] & 1) === 0 });
-        o += size;
-      }
-      return frames;
-    }
+
+
+
 
     function pick() {
       var i = 0;
