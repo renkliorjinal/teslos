@@ -9,6 +9,7 @@ const youtube = require('./youtube');
 const oauth = require('./oauth');
 const history = require('./history');
 const stream = require('./stream');
+const mediacheck = require('./mediacheck');
 
 const router = express.Router();
 
@@ -49,6 +50,19 @@ router.get('/health', (req, res) => {
     // without anyone having to be sitting in front of the server.
     lastFailure: stream.lastFailure(),
   });
+});
+
+// Why the CDN refused, answered rather than guessed at. Slow on purpose — it
+// resolves and then fetches for real — so it is a thing you open when something
+// is wrong, not something the player polls.
+router.get('/mediacheck', async (req, res) => {
+  const videoId = youtube.parseVideoId(req.query.v);
+  if (!videoId) return fail(res, 400, 'Geçersiz video kimliği. /api/mediacheck?v=VIDEO_ID');
+  try {
+    res.json({ ok: true, ...await mediacheck.run(videoId, { all: req.query.all === '1' }) });
+  } catch (err) {
+    fail(res, 500, err.message);
+  }
 });
 
 router.get('/meta', async (req, res) => {

@@ -21,6 +21,7 @@ const helpers = require('./helpers');
 const SUITES = [
   { name: 'drift', needs: [] },
   { name: 'reaper', needs: [] },
+  { name: 'resolve', needs: [] },
   { name: 'slots', needs: ['ffmpeg'] },
   { name: 'cookies', needs: ['ffmpeg'] },
   { name: 'statedir', needs: ['ffmpeg'] },

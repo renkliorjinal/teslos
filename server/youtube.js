@@ -194,6 +194,49 @@ function cacheKey(videoId, height, requireAvc) {
 //
 // av01 is excluded because software AV1 decode on a small droplet cannot keep
 // up with realtime transcoding.
+/**
+ * The resolve command, and why it asks for a header as well as a URL.
+ *
+ * ffmpeg fetches these URLs, not yt-dlp — and for several of the player clients
+ * googlevideo will only serve one to the User-Agent that asked for it. ffmpeg
+ * sends its own "Lavf/…", so the resolve succeeds, the fetch is refused with a
+ * bare 403, and from the car it looks like the video is broken rather than the
+ * request. The header therefore comes back alongside the URLs and travels with
+ * them to ffmpeg.
+ *
+ * --print runs before -g, so the User-Agent is the first line; the parser does
+ * not rely on that, since the two options are documented as an ordered list and
+ * one yt-dlp release reordering them would be a silent 403 again.
+ */
+function resolveArgs(format, videoId) {
+  return [...baseArgs(), '-f', format,
+    '--print', '%(http_headers.User-Agent)s',
+    '-g', watchUrl(videoId)];
+}
+
+function parseResolve(out) {
+  const lines = out.trim().split('\n').map((s) => s.trim()).filter(Boolean);
+  const urls = lines.filter((s) => /^https?:/i.test(s));
+  if (urls.length === 0) return null;
+  // Anything that is not a URL is the header line. "NA" is what yt-dlp prints
+  // for a field the extractor did not set, and is not a User-Agent.
+  const userAgent = lines.find((s) => !/^https?:/i.test(s) && s !== 'NA') || null;
+  return urls.length === 1
+    ? { video: urls[0], audio: null, userAgent }
+    : { video: urls[0], audio: urls[1], userAgent };
+}
+
+// One client, no cache, no chain — for the media check, which needs to compare
+// clients against each other rather than take the first that answers.
+async function resolveWithClient(videoId, height, client) {
+  const format = `bestvideo[height<=${height}][vcodec!*=av01]+bestaudio/best[height<=${height}]/best`;
+  const out = await runYtDlp([...resolveArgs(format, videoId), ...clientArgs(client)],
+    { timeout: 45000 });
+  const streams = parseResolve(out);
+  if (!streams) throw new Error('no stream URL');
+  return streams;
+}
+
 async function resolveStreams(videoId, height, { requireAvc = false } = {}) {
   const key = cacheKey(videoId, height, requireAvc);
   const hit = resolveCache.get(key);
@@ -214,13 +257,9 @@ async function resolveStreams(videoId, height, { requireAvc = false } = {}) {
       'best',
     ].join('/');
 
-  const out = await runWithClients([...baseArgs(), '-f', format, '-g', watchUrl(videoId)]);
-  const urls = out.trim().split('\n').map((s) => s.trim()).filter((s) => s.startsWith('http'));
-
-  if (urls.length === 0) throw new Error('yt-dlp returned no stream URL');
-  const streams = urls.length === 1
-    ? { video: urls[0], audio: null }
-    : { video: urls[0], audio: urls[1] };
+  const out = await runWithClients(resolveArgs(format, videoId));
+  const streams = parseResolve(out);
+  if (!streams) throw new Error('yt-dlp returned no stream URL');
 
   resolveCache.set(key, { at: Date.now(), streams });
   // The map is per-video and short-lived, but a long session should not let it
@@ -309,5 +348,8 @@ async function search(query, limit = 12) {
 
 module.exports = {
   parseVideoId, watchUrl, getMetadata, resolveStreams, forgetResolve, search,
-  feed, feedNames, activeClient, CLIENT_CHAIN,
+  feed, feedNames, activeClient, CLIENT_CHAIN, resolveWithClient,
+  // For test/resolve.js. Silent misparsing here hands ffmpeg a URL with no
+  // header, which is a 403 twenty seconds later and nothing in between.
+  _parseResolve: parseResolve,
 };

@@ -162,9 +162,14 @@ setInterval(reapTick, 5000).unref();
 // optional. These flags are per-input and must precede the -i they apply to.
 // They belong to ffmpeg's http protocol, so a non-HTTP input would be rejected
 // outright with "Option reconnect not found".
-function inputArgs(url, startTime) {
+function inputArgs(url, startTime, userAgent) {
   const args = [];
   if (/^https?:/i.test(url)) {
+    // googlevideo hands a URL to whichever client asked for it and, for several
+    // of the player clients, refuses to serve it to anything else. ffmpeg's own
+    // "Lavf/…" is exactly that anything else, and the refusal arrives as a bare
+    // 403 well after the resolve looked perfectly healthy.
+    if (userAgent) args.push('-user_agent', userAgent);
     args.push(
       '-reconnect', '1',
       '-reconnect_streamed', '1',
@@ -201,12 +206,12 @@ async function startVideoStream({ videoId, quality, startTime = 0, withAudio = t
     const streams = await youtube.resolveStreams(videoId, quality);
 
     const args = ['-hide_banner', '-loglevel', 'error', ...pacingArgs()];
-    args.push(...inputArgs(streams.video, startTime));
+    args.push(...inputArgs(streams.video, startTime, streams.userAgent));
 
     // DASH gives video and audio as separate URLs; progressive gives one muxed
     // file. Only add a second input when there really is one.
     const separateAudio = withAudio && Boolean(streams.audio);
-    if (separateAudio) args.push(...inputArgs(streams.audio, startTime));
+    if (separateAudio) args.push(...inputArgs(streams.audio, startTime, streams.userAgent));
 
     args.push('-map', '0:v:0');
     if (withAudio) args.push('-map', separateAudio ? '1:a:0' : '0:a:0?');
@@ -267,8 +272,8 @@ async function startDirectStream({ videoId, quality, startTime = 0 }) {
     }
 
     const args = ['-hide_banner', '-loglevel', 'error'];
-    args.push(...inputArgs(streams.video, startTime));
-    if (streams.audio) args.push(...inputArgs(streams.audio, startTime));
+    args.push(...inputArgs(streams.video, startTime, streams.userAgent));
+    if (streams.audio) args.push(...inputArgs(streams.audio, startTime, streams.userAgent));
 
     args.push('-map', '0:v:0');
     args.push('-map', streams.audio ? '1:a:0' : '0:a:0?');
@@ -337,7 +342,7 @@ async function startH264Stream({ videoId, quality, startTime = 0 }) {
     }
 
     const args = ['-hide_banner', '-loglevel', 'error', ...pacingArgs()];
-    args.push(...inputArgs(streams.video, startTime));
+    args.push(...inputArgs(streams.video, startTime, streams.userAgent));
     args.push('-map', '0:v:0', '-an');
 
     if (copyable) {
@@ -392,7 +397,7 @@ async function startAudioStream({ videoId, startTime = 0 }) {
   // The soundtrack is the master clock, so a stall in it stalls everything.
   // Paced the same way, and it is a tenth of the video's bitrate anyway.
   const args = ['-hide_banner', '-loglevel', 'error', ...pacingArgs()];
-  args.push(...inputArgs(url, startTime));
+  args.push(...inputArgs(url, startTime, streams.userAgent));
   args.push(
     '-vn',
     '-c:a', 'libmp3lame',
@@ -419,11 +424,22 @@ let failure = null;
 
 // ffmpeg quotes the whole media URL back at us, which is a kilometre of signed
 // query string, and a proxy URL can carry credentials. Neither belongs in an API
-// response, and the useful half of the message is never in either.
+// response.
+//
+// But which parameters are present is not noise — an `ip` in there means the URL
+// is locked to the address that resolved it, and a `pot` means it wants a
+// proof-of-origin token — so the names survive and every value goes. Redacting
+// them wholesale hid exactly the half worth reading, once.
+const TELLING = ['ip', 'ipbits', 'pot', 'expire', 'sparams'];
+
 function redact(text) {
   return String(text || '')
     .replace(/\/\/[^@\s/]*@/g, '//***@')
-    .replace(/(https?:\/\/[^\s?]+)\?\S*/g, '$1?…')
+    .replace(/(https?:\/\/[^\s?]+)\?(\S*)/g, (match, base, query) => {
+      const names = query.split('&').map((p) => p.split('=')[0]).filter(Boolean);
+      const telling = TELLING.filter((k) => names.includes(k));
+      return `${base}?[${names.length} param${telling.length ? '; ' + telling.join(',') : ''}]`;
+    })
     .trim();
 }
 
