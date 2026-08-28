@@ -15,9 +15,10 @@
      viewport. object-fit does the letterboxing; without it the canvas would
      render at its intrinsic size as a small window in the middle of the
      screen. Verified to letterbox rather than stretch on Chromium. */
-  #screen, #direct { width: 100%; height: 100%; object-fit: contain; display: block; }
+  #screen, #wcscreen, #direct { width: 100%; height: 100%; object-fit: contain;
+                                display: block; }
   /* Only one transport renders at a time. */
-  #screen.off, #direct.off { display: none; }
+  #screen.off, #wcscreen.off, #direct.off { display: none; }
 
   /* ------------------------------------------------------------- picker */
 
@@ -176,6 +177,10 @@
 <body>
 <div class="stage">
   <canvas id="screen"></canvas>
+  <!-- A second canvas, because a WebGL context and a 2D context cannot share
+       one element: JSMpeg claims the first with WebGL, and getContext('2d')
+       on it afterwards returns null. -->
+  <canvas id="wcscreen" class="off"></canvas>
   <video id="direct" playsinline></video>
   <div class="recut" id="recut">hizalanıyor…</div>
   <div class="toast" id="toast"></div>

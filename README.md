@@ -36,7 +36,7 @@ The block therefore lands on the `<video>` element specifically, not on video
 data, decoding, or the screen. Anything that reaches the canvas by another
 route keeps working.
 
-## The two transports
+## The three transports
 
 **canvas** (default) — MPEG1 in an MPEG-TS over a WebSocket, decoded by JSMpeg
 in JavaScript and painted into a `<canvas>`:
@@ -50,6 +50,38 @@ YouTube ──yt-dlp──► ffmpeg ──MPEG1-TS──► WebSocket ──►
 No `<video>` element exists anywhere in it, which is the entire point. It costs
 a realtime transcode per viewer and MPEG1 looks poor beside H.264, but it is
 what survives the lockout.
+
+**h264** — YouTube's own H.264, copied rather than re-encoded, decoded in the
+page by WebCodecs and painted into a canvas:
+
+```
+YouTube ──yt-dlp──► ffmpeg -c:v copy ──Annex-B H.264──► fetch ──► VideoDecoder ──► <canvas>
+```
+
+No `<video>` element either, so the lockout has nothing to act on — the same
+reason the MPEG1 path works, without the transcode that made it stutter and look
+soft. **Measured in the car before it was written: 231 fps on 720p30**, about
+eight times real time. The chip was never the constraint; the server was.
+
+It costs the server essentially nothing (a copy, not an encode) and about a
+third of MPEG1's bitrate for a better picture. Annex-B rather than fMP4 because
+the server inserts access unit delimiters, so splitting frames is a start-code
+scan and `VideoDecoder` takes Annex-B directly — an fMP4 would mean a box parser
+on the client for no gain. Two bitstream filters are load-bearing:
+`h264_mp4toannexb` moves the parameter sets in-band (ffmpeg inserts it
+automatically for raw H.264 *only* when no explicit `-bsf` is given, so setting
+one silently loses it), and `h264_metadata=aud=insert` adds the delimiters.
+
+Backpressure is simply not reading the response body: the fetch stalls, TCP
+closes its window, and the server's own lead cap does the rest. No side channel,
+unlike the WebSocket path.
+
+The codec string is read out of the SPS rather than guessed, and
+`isConfigSupported` is asked before configuring — a Chromium built without the
+licensed codecs has the WebCodecs API and none of the profiles, and should say
+so plainly rather than fail inside the decoder. Where H.264 is missing the path
+is not offered at all, and a decode that fails anyway falls back to canvas
+without dropping the soundtrack.
 
 **direct** (parked only) — an ordinary `<video>` fed a remuxed MP4, copied from
 YouTube's own H.264 and AAC without re-encoding:
@@ -482,10 +514,9 @@ deploy/        nginx and systemd templates
   stream, with the `<video>` element as both speaker and clock.
 - **yt-dlp is load-bearing.** YouTube changes break it regularly; keep it
   updated.
-- **WebCodecs is available and unused.** The probe decodes H.264 through
-  `VideoDecoder` into a canvas at speed, which would beat MPEG1 badly at the
-  same bitrate and cost the server far less. Replacing the transport with it is
-  the obvious next step.
+- **The canvas path is still the default.** The H.264 transport is better on
+  every measure but new, so it is chosen from the transport button rather than
+  imposed. Once it has held up over a long drive the default should move.
 - **WebRTC is available and unused.** `/probe/` reports `RTCPeerConnection` as
   present. Its video normally lands in a `<video>` element, so it would need
   the same canvas treatment to be worth anything here.

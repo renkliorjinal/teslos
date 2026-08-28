@@ -253,6 +253,37 @@ router.get('/stream', async (req, res) => {
   res.on('close', () => session.stop());
 });
 
+// The WebCodecs path: YouTube's own H.264, copied rather than re-encoded, as
+// raw Annex-B for the client to decode into a canvas. No <video> element is
+// involved at either end, so the Drive lockout has nothing to act on — and the
+// server spends no CPU on a transcode it was only ever doing because MPEG1 was
+// the one thing plain JavaScript could decode.
+router.get('/h264', async (req, res) => {
+  const videoId = youtube.parseVideoId(req.query.v);
+  if (!videoId) return fail(res, 400, 'Geçersiz video kimliği');
+  if (stream.atCapacity()) return fail(res, 503, 'Sunucu kapasitesi dolu');
+
+  const quality = config.resolveQuality(req.query.q);
+  const startTime = Math.max(0, Number(req.query.t) || 0);
+
+  let session;
+  try {
+    session = await stream.startH264Stream({ videoId, quality, startTime });
+  } catch (err) {
+    return fail(res, 502, err.message);
+  }
+
+  res.writeHead(200, {
+    'Content-Type': 'video/h264',
+    'Cache-Control': 'no-store',
+    'Connection': 'close',
+  });
+
+  session.stdout.pipe(res);
+  session.proc.on('close', () => res.end());
+  res.on('close', () => session.stop());
+});
+
 // Fallback audio path: a plain MP3 body for an <audio> element, used when
 // WebAudio turns out to be unavailable in Drive.
 router.get('/audio', async (req, res) => {

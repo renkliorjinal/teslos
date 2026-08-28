@@ -25,6 +25,7 @@ const SUITES = [
   { name: 'statedir', needs: ['ffmpeg'] },
   { name: 'audio', needs: ['ffmpeg'] },
   { name: 'directpaths', needs: ['ffmpeg'] },
+  { name: 'h264', needs: ['ffmpeg'] },
   { name: 'browse', needs: ['ffmpeg', 'browser'] },
   { name: 'ui', needs: ['ffmpeg', 'browser'] },
   { name: 'oauth', needs: ['ffmpeg', 'browser'] },

@@ -250,6 +250,83 @@ async function startDirectStream({ videoId, quality, startTime = 0 }) {
 }
 
 /**
+ * Raw H.264 on stdout, copied rather than re-encoded, with access unit
+ * delimiters inserted.
+ *
+ * This is what the canvas path should have been all along. The car decodes
+ * 720p30 H.264 at 231 fps in software — measured, not assumed — so there is no
+ * reason for this server to spend a core per viewer turning YouTube's H.264
+ * into MPEG1. Copying costs almost nothing, the picture is YouTube's own rather
+ * than a second-generation re-encode, and the bitrate is a third of MPEG1's for
+ * the same quality.
+ *
+ * It still reaches the screen through a <canvas>, via WebCodecs, so no <video>
+ * element exists and the Drive lockout has nothing to act on.
+ *
+ * Annex-B rather than MP4 on purpose: with delimiters inserted, splitting the
+ * stream into frames is a start-code scan, and VideoDecoder accepts Annex-B
+ * directly when configured without a description. An fMP4 would mean writing a
+ * box parser on the client for no gain.
+ */
+async function startH264Stream({ videoId, quality, startTime = 0 }) {
+  const releaseSlot = reserveSlot();
+  try {
+    // Only H.264 will do here, so a video YouTube offers only in VP9 or AV1 has
+    // to be re-encoded — the one case where this path costs what the old one
+    // always cost.
+    let streams;
+    let copyable = true;
+    try {
+      streams = await youtube.resolveStreams(videoId, quality, { requireAvc: true });
+    } catch (err) {
+      copyable = false;
+      streams = await youtube.resolveStreams(videoId, quality);
+      console.log(`[h264] ${videoId}: no H.264 at ${quality}p, transcoding instead`);
+    }
+
+    const args = ['-hide_banner', '-loglevel', 'error', ...pacingArgs()];
+    args.push(...inputArgs(streams.video, startTime));
+    args.push('-map', '0:v:0', '-an');
+
+    if (copyable) {
+      args.push('-c:v', 'copy');
+    } else {
+      const preset = config.QUALITY[quality] || config.QUALITY[config.DEFAULT_QUALITY];
+      args.push(
+        '-c:v', 'libx264', '-preset', 'veryfast', '-profile:v', 'main',
+        '-b:v', preset.videoBitrate, '-maxrate', preset.videoBitrate,
+        '-bufsize', preset.videoBitrate, '-pix_fmt', 'yuv420p',
+        '-vf', `scale=${preset.scale}`,
+      );
+    }
+
+    args.push(
+      // Two filters, and both are load-bearing.
+      //
+      // h264_mp4toannexb moves the parameter sets out of the container and
+      // in-band. ffmpeg inserts it automatically when muxing raw H.264, but
+      // only when no explicit -bsf is given — set one and the automatic one is
+      // gone, and the stream arrives with no SPS for the decoder to configure
+      // from. It also repeats them before every keyframe, so a re-cut mid-video
+      // does not have to start from the beginning of the file.
+      //
+      // h264_metadata=aud=insert adds the access unit delimiters that turn
+      // frame splitting on the client into a start-code scan.
+      '-bsf:v', copyable
+        ? 'h264_mp4toannexb,h264_metadata=aud=insert'
+        : 'h264_metadata=aud=insert',
+      '-f', 'h264',
+      '-',
+    );
+
+    return spawnFfmpeg(args, `h264 ${videoId}@${quality}p t=${startTime} ${copyable ? 'copy' : 'transcode'}`,
+      'video', videoId);
+  } finally {
+    releaseSlot();
+  }
+}
+
+/**
  * MP3 on stdout for the fallback audio path.
  *
  * Muxed MP2 decoded by JSMpeg into WebAudio keeps perfect A/V sync, but if
@@ -342,6 +419,6 @@ function spawnFfmpeg(args, label, pool, videoId) {
 }
 
 module.exports = {
-  startVideoStream, startDirectStream, startAudioStream,
+  startVideoStream, startDirectStream, startH264Stream, startAudioStream,
   sessionCount, atCapacity, audioAtCapacity,
 };

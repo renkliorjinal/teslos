@@ -310,9 +310,11 @@ async function main() {
     throw new Error('YouTube bu sunucuyu bot sanıyor; hiçbir istemci geçemedi.');
   };
 
+  // Three transports now, so reaching the direct one is a cycle rather than a
+  // toggle.
   await page.evaluate(() => {
     const b = document.getElementById('transportBtn');
-    if (!/doğrudan/.test(b.textContent)) b.click();
+    for (let i = 0; i < 4 && !/doğrudan/.test(b.textContent); i++) b.click();
   });
   await page.waitForTimeout(1000);
   await page.evaluate(() => {

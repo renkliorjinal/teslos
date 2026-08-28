@@ -25,6 +25,7 @@
 
   var el = {
     canvas: $('screen'),
+    wcCanvas: $('wcscreen'),
     video: $('direct'),
     overlay: $('overlay'),
     query: $('q'),
@@ -159,6 +160,14 @@
     toast.timer = setTimeout(function () { el.toast.style.display = 'none'; }, 6000);
   }
 
+  // Three surfaces, one visible. Leaving this to each transport meant a new one
+  // only had to forget the others existed to leave two of them stacked.
+  function showOnly(surface) {
+    [el.canvas, el.wcCanvas, el.video].forEach(function (node) {
+      node.classList.toggle('off', node !== surface);
+    });
+  }
+
   function isDirect() {
     return state.transport === 'direct';
   }
@@ -216,6 +225,9 @@
     var elapsed = 0;
     if (isDirect()) {
       elapsed = el.video.currentTime || 0;
+    } else if (state.transport === 'h264') {
+      elapsed = h264 ? h264.shown / h264.fps : 0;
+      if (elapsed <= 0) elapsed = (performance.now() - state.streamStartedAt) / 1000;
     } else {
       try {
         elapsed = state.player ? state.player.currentTime || 0 : 0;
@@ -434,6 +446,7 @@
 
   // Tearing down the picture, which costs nothing outside this page.
   function teardownPicture() {
+    stopH264();
     // An interval now, not a timeout — clearTimeout would leave it polling
     // against a player that no longer exists.
     clearInterval(state.watchdog);
@@ -494,6 +507,12 @@
 
     if (isDirect()) {
       startDirect();
+    } else if (state.transport === 'h264') {
+      el.recut.textContent = 'bağlanılıyor…';
+      el.recut.classList.add('on');
+      state.recutUntil = 0;
+      startH264();
+      startFallbackAudioIfIdle();
     } else {
       // The canvas has no context yet, and an empty one paints white here. Cover
       // it until frames arrive rather than showing a blank screen with a status
@@ -528,8 +547,7 @@
   }
 
   function startDirect() {
-    el.canvas.classList.add('off');
-    el.video.classList.remove('off');
+    showOnly(el.video);
 
     el.video.src = '/api/stream?v=' + encodeURIComponent(state.videoId)
       + '&q=' + state.quality
@@ -558,8 +576,7 @@
   }
 
   function startCanvas() {
-    el.video.classList.add('off');
-    el.canvas.classList.remove('off');
+    showOnly(el.canvas);
 
     var muxedAudio = state.audioMode === 'muxed';
     var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -603,12 +620,16 @@
     watchSocket();
     if (muxedAudio) {
       armAudioWatchdog();
-    } else if (el.audio.paused || !el.audio.getAttribute('src')) {
-      // Only when there is no soundtrack running. A re-cut of the picture comes
-      // back through here, and starting the element again is the one thing that
-      // must not happen — it is what hands the speakers back and forth.
-      startFallbackAudio();
+    } else {
+      startFallbackAudioIfIdle();
     }
+  }
+
+  // Only when there is no soundtrack running. A re-cut of the picture comes
+  // back through here, and starting the element again is the one thing that
+  // must not happen — it is what hands the speakers back and forth.
+  function startFallbackAudioIfIdle() {
+    if (el.audio.paused || !el.audio.getAttribute('src')) startFallbackAudio();
   }
 
   // Frames are decoding again, so the cover has done its job. The delay keeps
@@ -619,6 +640,242 @@
     if (Date.now() < state.recutUntil) return;
     el.recut.classList.remove('on');
     setStatus('akıyor');
+  }
+
+  /**
+   * The WebCodecs transport.
+   *
+   * YouTube's own H.264, copied by the server rather than re-encoded, decoded
+   * here and painted into a canvas. No <video> element at either end, so the
+   * Drive lockout has nothing to act on — the same reason the MPEG1 path works,
+   * but without the transcode that made it stutter and look soft.
+   *
+   * Measured in the car before any of this was written: 231 fps on 720p30,
+   * about eight times real time. The chip was never the constraint.
+   *
+   * Annex-B, because the server inserts access unit delimiters and VideoDecoder
+   * takes Annex-B directly when configured without a description. The
+   * alternative — fragmented MP4 — would mean a box parser here for no gain.
+   */
+  var h264 = null;
+
+  // A start code is 00 00 01 or 00 00 00 01; the byte after it carries the NAL
+  // type in its low five bits. Type 9 is an access unit delimiter, which the
+  // server inserts before every frame, so frame boundaries are a scan.
+  function nalTypeAt(buf, i) {
+    if (buf[i] !== 0 || buf[i + 1] !== 0) return -1;
+    if (buf[i + 2] === 1) return buf[i + 3] & 0x1f;
+    if (buf[i + 2] === 0 && buf[i + 3] === 1) return buf[i + 4] & 0x1f;
+    return -1;
+  }
+
+  function startCodeLength(buf, i) {
+    return buf[i + 2] === 1 ? 3 : 4;
+  }
+
+  // The codec string has to match the stream, and the stream is whatever
+  // YouTube encoded. Rather than guess a profile and have the decoder reject
+  // it, read profile, constraints and level straight out of the SPS.
+  function codecFromSps(buf) {
+    for (var i = 0; i < buf.length - 8; i++) {
+      if (nalTypeAt(buf, i) !== 7) continue;
+      var n = i + startCodeLength(buf, i);
+      var hex = function (v) { return (v < 16 ? '0' : '') + v.toString(16); };
+      return 'avc1.' + hex(buf[n + 1]) + hex(buf[n + 2]) + hex(buf[n + 3]);
+    }
+    return null;
+  }
+
+  function startH264() {
+    showOnly(el.wcCanvas);
+
+    var ctx = el.wcCanvas.getContext('2d');
+    var url = '/api/h264?v=' + encodeURIComponent(state.videoId)
+      + '&q=' + state.quality
+      + '&t=' + Math.floor(state.startOffset);
+
+    var session = {
+      pending: [],        // access units decoded from the wire, not yet fed
+      decoder: null,
+      reader: null,
+      stopped: false,
+      shown: 0,
+      // Frames are timestamped by index; the real presentation times live in
+      // the container this stream deliberately does not have. The soundtrack is
+      // the clock anyway.
+      fps: 30,
+      fed: 0,
+    };
+    h264 = session;
+
+    // Not reading is the backpressure. The fetch body stops being drained, TCP
+    // closes its window, and the server's own lead cap does the rest — no
+    // side-channel needed, unlike the WebSocket path.
+    var WANT_AHEAD = 90;   // access units, about three seconds
+
+    fetch(url)
+      .then(function (response) {
+        if (!response.ok) {
+          return response.json().then(function (body) {
+            throw new Error(body.error || ('HTTP ' + response.status));
+          });
+        }
+        session.reader = response.body.getReader();
+        pull();
+        pump();
+      })
+      .catch(function (err) {
+        if (session.stopped) return;
+        toast('H.264 akışı başlatılamadı: ' + err.message);
+        setTransport('canvas', true);
+      });
+
+    var tail = new Uint8Array(0);
+
+    function pull() {
+      if (session.stopped || !session.reader) return;
+      if (session.pending.length >= WANT_AHEAD) {
+        // Full enough. Coming back on a timer rather than reading is what
+        // applies the brake.
+        setTimeout(pull, 120);
+        return;
+      }
+
+      session.reader.read().then(function (result) {
+        if (session.stopped) return;
+        if (result.done) {
+          session.ended = true;
+          return;
+        }
+
+        var merged = new Uint8Array(tail.length + result.value.length);
+        merged.set(tail, 0);
+        merged.set(result.value, tail.length);
+
+        // Split on delimiters, keeping the last partial unit for next time.
+        var starts = [];
+        for (var i = 0; i < merged.length - 4; i++) {
+          if (nalTypeAt(merged, i) === 9) starts.push(i);
+        }
+        if (starts.length > 1) {
+          for (var n = 0; n < starts.length - 1; n++) {
+            session.pending.push(merged.subarray(starts[n], starts[n + 1]));
+          }
+          tail = merged.subarray(starts[starts.length - 1]);
+        } else {
+          tail = merged;
+        }
+
+        state.bufferSeconds = session.pending.length / session.fps;
+        pull();
+      }).catch(function () {
+        if (!session.stopped) session.ended = true;
+      });
+    }
+
+    function configure(firstUnit) {
+      var codec = codecFromSps(firstUnit) || 'avc1.42E01E';
+      state.h264Codec = codec;
+      // Asked before configuring, so a build without the licensed codecs — some
+      // Chromium builds ship none — gives a plain answer instead of an opaque
+      // "Unsupported configuration" from inside the decoder.
+      session.configuring = true;
+      VideoDecoder.isConfigSupported({ codec: codec })
+        .then(function (support) {
+          if (session.stopped) return;
+          if (!support.supported) throw new Error(codec + ' desteklenmiyor');
+          build(codec);
+        })
+        .catch(function (err) {
+          if (session.stopped) return;
+          toast('Bu tarayıcı H.264 çözemiyor (' + err.message + ') — canvas yoluna dönülüyor');
+          setTransport('canvas', true);
+        });
+    }
+
+    function build(codec) {
+      session.decoder = new VideoDecoder({
+        output: function (frame) {
+          session.shown += 1;
+          if (el.wcCanvas.width !== frame.displayWidth) {
+            el.wcCanvas.width = frame.displayWidth;
+            el.wcCanvas.height = frame.displayHeight;
+          }
+          try {
+            ctx.drawImage(frame, 0, 0);
+          } catch (e) {
+            // Frame already closed.
+          }
+          frame.close();
+          state.lastFrameAt = Date.now();
+          pictureAlive();
+        },
+        error: function (err) {
+          if (session.stopped) return;
+          toast('H.264 çözülemedi: ' + err.message + ' — canvas yoluna dönülüyor');
+          setTransport('canvas', true);
+        },
+      });
+      session.decoder.configure({ codec: codec, optimizeForLatency: true });
+      session.configuring = false;
+    }
+
+    // Slaved to the soundtrack, exactly as the MPEG1 path is: decode until the
+    // picture reaches where the sound has got to, then wait. Behind, it catches
+    // up as fast as the buffer allows.
+    function pump() {
+      if (session.stopped) return;
+      requestAnimationFrame(pump);
+
+      if (!session.pending.length) return;
+      if (!session.decoder && !session.configuring) configure(session.pending[0]);
+      if (!session.decoder || session.decoder.state !== 'configured') return;
+
+      var target = audioClockRunning()
+        ? masterPosition() + state.audioNudge - state.startOffset
+        : (performance.now() - state.streamStartedAt) / 1000;
+
+      var budget = 16;
+      while (session.fed / session.fps < target
+        && session.pending.length
+        && session.decoder.decodeQueueSize < 8
+        && budget > 0) {
+        var unit = session.pending.shift();
+        var isKey = false;
+        for (var i = 0; i < unit.length - 5; i++) {
+          var t = nalTypeAt(unit, i);
+          if (t === 5 || t === 7) { isKey = true; break; }
+        }
+        // The first unit fed must be a keyframe or the decoder has nothing to
+        // apply the deltas to.
+        if (session.fed === 0 && !isKey) continue;
+
+        session.decoder.decode(new EncodedVideoChunk({
+          type: isKey ? 'key' : 'delta',
+          timestamp: Math.round((session.fed / session.fps) * 1e6),
+          data: unit,
+        }));
+        session.fed += 1;
+        budget -= 1;
+      }
+      state.bufferSeconds = session.pending.length / session.fps;
+    }
+  }
+
+  function stopH264() {
+    if (!h264) return;
+    h264.stopped = true;
+    try {
+      if (h264.reader) h264.reader.cancel();
+    } catch (e) {
+      // Already closed.
+    }
+    try {
+      if (h264.decoder && h264.decoder.state !== 'closed') h264.decoder.close();
+    } catch (e) {
+      // Already closed.
+    }
+    h264 = null;
   }
 
   /**
@@ -1294,10 +1551,15 @@
 
   // --------------------------------------------------------------- controls
 
+  var TRANSPORT_LABEL = { canvas: 'canvas', h264: 'H.264', direct: 'doğrudan' };
+
   function setTransport(transport, restart) {
     state.transport = transport;
-    el.transportBtn.textContent = 'Yol: ' + (transport === 'direct' ? 'doğrudan' : 'canvas');
-    document.body.classList.toggle('canvas-transport', transport === 'canvas');
+    el.transportBtn.textContent = 'Yol: ' + (TRANSPORT_LABEL[transport] || transport);
+    // Both canvas-rendered paths drive the soundtrack themselves, so both want
+    // the audio chip and the nudge buttons. Only the <video> path carries its
+    // own sound.
+    document.body.classList.toggle('canvas-transport', transport !== 'direct');
     if (restart && state.videoId) start(currentPosition());
   }
 
@@ -1433,8 +1695,16 @@
     setQuality(next);
   });
 
+  // Three now, cycled in order of how much of the picture survives Drive:
+  // canvas always works, H.264 works and looks far better, direct is
+  // parked-only. H.264 is skipped entirely where WebCodecs is absent, so the
+  // button never offers a path this browser cannot take.
   el.transportBtn.addEventListener('click', function () {
-    setTransport(isDirect() ? 'canvas' : 'direct', true);
+    var order = typeof VideoDecoder === 'undefined'
+      ? ['canvas', 'direct']
+      : ['canvas', 'h264', 'direct'];
+    var next = order[(order.indexOf(state.transport) + 1) % order.length];
+    setTransport(next, true);
   });
 
   el.audioBtn.addEventListener('click', function () {
@@ -1629,6 +1899,15 @@
         decoded = state.player ? state.player.currentTime.toFixed(2) + 's' : 'no player';
       } catch (e) {
         decoded = 'unavailable';
+      }
+      if (state.transport === 'h264') {
+        lines.push(
+          'codec       ' + (state.h264Codec || '—'),
+          'frames      ' + (h264 ? h264.shown + ' shown, ' + h264.fed + ' fed' : '—'),
+          'queued      ' + (h264 ? h264.pending.length + ' units' : '—'),
+          'decoder     ' + (h264 && h264.decoder ? h264.decoder.state
+            + ', queue ' + h264.decoder.decodeQueueSize : 'none')
+        );
       }
       var socket = state.player && state.player.source && state.player.source.socket;
       var out = state.player && state.player.audioOut;
