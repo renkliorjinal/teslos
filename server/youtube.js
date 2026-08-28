@@ -267,6 +267,53 @@ function resolveArgs(format, videoId, opts) {
     '-g', watchUrl(videoId)];
 }
 
+/**
+ * Which address YouTube thinks is asking, observed for free as we go.
+ *
+ * When a media URL carries an `ip` parameter, googlevideo has signed it for
+ * that address and will serve it to nobody else. So if the proxy hands out a
+ * different exit per connection, the fetch is refused however many times it is
+ * retried — and no header, client or timeout will ever fix it.
+ *
+ * Knowing whether that is happening used to mean a special trip: two resolves
+ * back to back with a browser waiting on them. But every normal resolve already
+ * carries the answer, so they are simply remembered. After a few videos the
+ * question is settled with no extra work at all, and /api/health can say so.
+ */
+const exitSeen = [];
+const EXIT_MEMORY = 12;
+
+function noteExitAddress(url) {
+  try {
+    const ip = new URL(url).searchParams.get('ip');
+    if (!ip) return;
+    exitSeen.push({ at: Date.now(), ip });
+    if (exitSeen.length > EXIT_MEMORY) exitSeen.shift();
+  } catch {
+    // A URL that will not parse is the caller's problem, not this one's.
+  }
+}
+
+// Proving the addresses differ is the point; publishing someone's proxy exits
+// is not, so only enough of each survives to tell them apart.
+function maskAddress(ip) {
+  return ip.includes(':')
+    ? `${ip.split(':').slice(0, 2).join(':')}:…`
+    : `${ip.split('.').slice(0, 2).join('.')}.x.x`;
+}
+
+function exitAddresses() {
+  if (!exitSeen.length) return null;
+  const distinct = new Set(exitSeen.map((e) => e.ip));
+  return {
+    seen: exitSeen.length,
+    distinct: distinct.size,
+    // One address across many resolves is a sticky proxy. Several is the fault.
+    rotating: distinct.size > 1,
+    recent: [...distinct].slice(-4).map(maskAddress),
+  };
+}
+
 function parseResolve(out) {
   const lines = out.trim().split('\n').map((s) => s.trim()).filter(Boolean);
   const urls = lines.filter((s) => /^https?:/i.test(s));
@@ -316,6 +363,7 @@ async function resolveStreams(videoId, height, { requireAvc = false } = {}) {
   if (!streams) throw new Error('yt-dlp returned no stream URL');
   // Travels with the URLs so that whoever gets refused can say who to blame.
   streams.client = client;
+  noteExitAddress(streams.video);
 
   resolveCache.set(key, { at: Date.now(), streams });
   // The map is per-video and short-lived, but a long session should not let it
@@ -405,6 +453,7 @@ async function search(query, limit = 12) {
 module.exports = {
   parseVideoId, watchUrl, getMetadata, resolveStreams, forgetResolve, search,
   feed, feedNames, activeClient, CLIENT_CHAIN, resolveWithClient, clientRefused,
+  exitAddresses,
   // For test/resolve.js. Silent misparsing here hands ffmpeg a URL with no
   // header, which is a 403 twenty seconds later and nothing in between; and a
   // chain that cannot stand a client down sits on a broken one indefinitely.

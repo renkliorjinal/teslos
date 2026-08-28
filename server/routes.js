@@ -49,6 +49,10 @@ router.get('/health', (req, res) => {
     // Health is polled by the outage screen anyway, so this reaches the car
     // without anyone having to be sitting in front of the server.
     lastFailure: stream.lastFailure(),
+    // Whether the proxy is handing out the same exit address each time. A URL
+    // signed for one address and fetched from another is refused outright, so
+    // "rotating": true is a diagnosis, not a statistic.
+    proxyExit: youtube.exitAddresses(),
   });
 });
 

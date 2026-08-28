@@ -27,17 +27,25 @@ const READ_RATE = process.env.READ_RATE || '1.5';
 const INITIAL_BURST = process.env.READ_BURST || '8';
 
 let pacing = null;
+let helpText = null;
+
+// One `-h full` for the whole process. Both the pacing flags and the http
+// reconnect options are read out of it, and it is not cheap enough to run twice.
+function ffmpegHelp() {
+  if (helpText !== null) return helpText;
+  try {
+    helpText = execFileSync(config.ffmpeg, ['-hide_banner', '-h', 'full'],
+      { timeout: 15000, maxBuffer: 8 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] }).toString();
+  } catch {
+    helpText = '';
+  }
+  return helpText;
+}
 
 function pacingArgs() {
   if (pacing) return pacing;
 
-  let help = '';
-  try {
-    help = execFileSync(config.ffmpeg, ['-hide_banner', '-h', 'full'],
-      { timeout: 15000, maxBuffer: 8 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] }).toString();
-  } catch {
-    help = '';
-  }
+  const help = ffmpegHelp();
 
   if (help.includes('-readrate ')) {
     pacing = ['-readrate', READ_RATE];
@@ -185,6 +193,23 @@ function reapTick(now = Date.now()) {
 
 setInterval(reapTick, 5000).unref();
 
+// Retrying an HTTP status, as opposed to a dropped socket. Probed rather than
+// assumed: the option is old, but so is the droplet's ffmpeg, and passing an
+// unknown one makes ffmpeg refuse the input outright rather than ignore it —
+// which would turn an intermittent failure into a total one.
+let httpRetry = null;
+
+function httpRetryArgs() {
+  if (httpRetry) return httpRetry;
+  httpRetry = ffmpegHelp().includes('-reconnect_on_http_error')
+    ? ['-reconnect_on_http_error', '4xx,5xx']
+    : [];
+  console.log(httpRetry.length
+    ? '[ffmpeg] will reconnect on 4xx/5xx as well as on dropped sockets'
+    : '[ffmpeg] no -reconnect_on_http_error in this build; a 403 will not be retried here');
+  return httpRetry;
+}
+
 // HTTP inputs from YouTube's CDN drop often enough that reconnects are not
 // optional. These flags are per-input and must precede the -i they apply to.
 // They belong to ffmpeg's http protocol, so a non-HTTP input would be rejected
@@ -203,6 +228,19 @@ function inputArgs(url, startTime, userAgent) {
       '-reconnect_on_network_error', '1',
       '-reconnect_delay_max', '10',
     );
+    // A 403 is worth reconnecting on, which is not obvious and turns out to be
+    // the difference between "plays" and "several failures then plays".
+    //
+    // Some of these URLs carry an `ip` parameter: googlevideo has signed them
+    // for the address that resolved them and will serve them to nobody else.
+    // The resolve leaves through the proxy, the fetch leaves through the proxy
+    // again — and a rotating residential proxy gives out a different exit per
+    // connection, so the two are often not the same address at all. Retrying
+    // opens a fresh connection and draws again, which is a gamble, but a cheap
+    // and invisible one: ffmpeg does it in a second without the page ever
+    // knowing, where the client-side retry costs a re-resolve, a reconnect and
+    // a visible message on the screen.
+    args.push(...httpRetryArgs());
     // YouTube binds a media URL to the address that resolved it, so the fetch
     // has to leave by the same door or the CDN answers 403.
     if (config.proxyMedia && config.proxyUsableByFfmpeg) {
