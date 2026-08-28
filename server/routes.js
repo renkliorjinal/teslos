@@ -56,8 +56,17 @@ router.get('/health', (req, res) => {
 // resolves and then fetches for real — so it is a thing you open when something
 // is wrong, not something the player polls.
 router.get('/mediacheck', async (req, res) => {
-  const videoId = youtube.parseVideoId(req.query.v);
-  if (!videoId) return fail(res, 400, 'Geçersiz video kimliği. /api/mediacheck?v=VIDEO_ID');
+  // Defaulting to the video that just failed is not a convenience. Typing an
+  // eleven-character YouTube id into a car's on-screen keyboard produced a
+  // capital O where a zero belonged, and the check dutifully reported that
+  // every client found the video unavailable — a completely correct answer to
+  // the wrong question, which cost a round trip on the road to notice.
+  const lastFailed = stream.lastFailure() && stream.lastFailure().videoId;
+  const videoId = youtube.parseVideoId(req.query.v) || lastFailed;
+  if (!videoId) {
+    return fail(res, 400, 'Sınanacak video yok. Önce bir video dene, sonra burayı aç — '
+      + 'ya da /api/mediacheck?v=VIDEO_ID');
+  }
   try {
     res.json({ ok: true, ...await mediacheck.run(videoId, { all: req.query.all === '1' }) });
   } catch (err) {

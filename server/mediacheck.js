@@ -26,8 +26,11 @@ const config = require('./config');
 const youtube = require('./youtube');
 
 // Long enough for a slow proxy to complete a TLS handshake and one range
-// request, short enough that four of them in series still answer a browser.
-const PROBE_TIMEOUT_MS = 25000;
+// request, short enough that a dozen of them in series still answer inside
+// nginx's sixty-second patience. A refusal comes back in well under a second;
+// this ceiling only bites on a proxy that has stopped answering, which is
+// itself the finding.
+const PROBE_TIMEOUT_MS = 12000;
 
 /**
  * Fetch the first fraction of a second of a URL exactly as the streaming paths
@@ -107,9 +110,10 @@ async function checkClient(videoId, client, proxy) {
   row.userAgent = streams.userAgent || null;
   Object.assign(row, describeUrl(url));
 
-  // Three ways, and the differences between them are the diagnosis:
-  //   what the server did before this change, the same with the header yt-dlp
-  //   used, and the same again leaving by the droplet's own address.
+  // Four ways, and the differences between them are the diagnosis:
+  //   what the server did before the header was added, the same with it, the
+  //   same again leaving by the droplet's own address, and the whole thing done
+  //   without the proxy at either end.
   row.probes = {
     proxyNoUa: await probe(url, { proxy }),
     proxyWithUa: streams.userAgent
@@ -118,15 +122,74 @@ async function checkClient(videoId, client, proxy) {
     directWithUa: await probe(url, { userAgent: streams.userAgent }),
   };
 
+  // The one combination the first three cannot express. If the URL is locked to
+  // whichever address resolved it, then fetching a proxy-resolved URL from the
+  // droplet fails for the same reason fetching it through a *rotating* proxy
+  // does — both are the wrong address — and the two are indistinguishable until
+  // one address is used consistently for both halves.
+  if (proxy && !row.probes.proxyWithUa.ok && !row.probes.directWithUa.ok) {
+    try {
+      const own = await youtube.resolveWithClient(videoId, 480, client, { noProxy: true });
+      row.probes.noProxyAtAll = await probe(own.audio || own.video,
+        { userAgent: own.userAgent });
+    } catch (err) {
+      row.probes.noProxyAtAll = {
+        ok: false,
+        error: `proxysiz çözülemedi: ${redactUrls(err.message).slice(0, 120)}`,
+      };
+    }
+  }
+
   return row;
+}
+
+/**
+ * Whether the proxy hands out a different address per connection.
+ *
+ * Decisive and nearly free: googlevideo writes the requesting address into the
+ * URL it signs, as `ip=`. Resolve twice and compare. Two different answers mean
+ * every ffmpeg connection leaves by a door YouTube has not signed for, which no
+ * amount of header-setting will fix — it needs a sticky session.
+ *
+ * The addresses themselves are reported with the host part masked: proving they
+ * differ is the point, publishing someone's proxy exits is not.
+ */
+async function checkRotation(videoId, client) {
+  const seen = [];
+  for (let i = 0; i < 2; i++) {
+    try {
+      const streams = await youtube.resolveWithClient(videoId, 480, client);
+      const url = new URL(streams.audio || streams.video);
+      seen.push(url.searchParams.get('ip'));
+    } catch {
+      return { checked: false, why: 'çözümleme başarısız' };
+    }
+  }
+  if (!seen[0] || !seen[1]) return { checked: false, why: 'adreste ip= parametresi yok' };
+  const mask = (ip) => ip.split(':').length > 2
+    ? `${ip.split(':').slice(0, 2).join(':')}:…`
+    : ip.split('.').slice(0, 2).concat(['x', 'x']).join('.');
+  return {
+    checked: true,
+    same: seen[0] === seen[1],
+    addresses: seen.map(mask),
+  };
 }
 
 // Reading the matrix. Ordered by how actionable the answer is rather than by
 // how likely it is, because two of these can be true at once and the cheapest
 // fix should win.
-function verdict(rows) {
+function verdict(rows, rotation) {
   const usable = rows.filter((r) => r.resolved && r.probes);
-  if (!usable.length) return { cause: 'resolve', says: 'Hiçbir istemci medya adresi çözemedi.' };
+  if (!usable.length) {
+    const why = rows.map((r) => r.error).filter(Boolean)[0] || '';
+    return {
+      cause: 'resolve',
+      says: 'Hiçbir istemci medya adresi çözemedi — bu bir oynatma sorunu değil, '
+        + 'video hiç çözülemiyor. Video kimliği doğru mu? '
+        + (why ? `yt-dlp: ${why}` : ''),
+    };
+  }
 
   const worksNow = usable.filter((r) => r.probes.proxyWithUa && r.probes.proxyWithUa.ok);
   if (worksNow.length) {
@@ -142,37 +205,61 @@ function verdict(rows) {
     };
   }
 
+  // A rotating proxy is checked before the address comparison, because it makes
+  // every address wrong and no combination of the others can succeed.
+  if (rotation && rotation.checked && rotation.same === false) {
+    return {
+      cause: 'proxy-rotating',
+      says: 'Sebep proxy. Art arda iki çözümleme iki farklı çıkış adresi verdi '
+        + `(${rotation.addresses.join(' ve ')}), yani proxy her bağlantıda IP değiştiriyor. `
+        + 'YouTube adresi çözen IP\'ye bağladığı için ffmpeg her seferinde yanlış kapıdan '
+        + 'çekiyor. Çözüm: proxy sağlayıcısında sabit (sticky) oturum aç — genelde kullanıcı '
+        + 'adına -session-xxxx eki gerekir — ya da proxy\'yi tamamen kaldır.',
+    };
+  }
+
   const directOk = usable.filter((r) => r.probes.directWithUa && r.probes.directWithUa.ok);
   if (directOk.length) {
     return {
-      cause: 'proxy',
+      cause: 'proxy-media',
       client: directOk[0].client,
       says: 'Sebep proxy. Aynı adres sunucunun kendi bağlantısından açılıyor, proxy üzerinden '
-        + 'açılmıyor — büyük ihtimalle her bağlantıda farklı çıkış IP\'si veren dönen bir proxy, '
-        + 'YouTube ise adresi çözen IP\'ye bağlıyor. Sabit (sticky) oturum gerekiyor, '
-        + 'ya da medya proxy\'siz çekilmeli: PROXY_MEDIA=0',
+        + 'açılmıyor. Medyanın proxy\'siz çekilmesi yeterli: PROXY_MEDIA=0',
+    };
+  }
+
+  const fullyDirectOk = usable.filter((r) => r.probes.noProxyAtAll && r.probes.noProxyAtAll.ok);
+  if (fullyDirectOk.length) {
+    return {
+      cause: 'proxy-entirely',
+      client: fullyDirectOk[0].client,
+      says: 'Sebep proxy. Proxy hiç kullanılmadığında — hem çözümleme hem çekme sunucunun '
+        + 'kendi adresinden — her şey çalışıyor. YouTube adresi çözen IP\'ye bağlıyor ve '
+        + 'proxy ile sunucu iki farklı adres. Proxy\'yi kaldır: PROXY_URL boş bırakılmalı. '
+        + '(Bot kontrolü geri gelirse çerez kavanozu gerekir.)',
     };
   }
 
   return {
     cause: 'unknown',
-    says: 'Üç yol da reddedildi. Aşağıdaki durum kodlarına bakmak gerekiyor — '
-      + 'çözülen adres muhtemelen bir proof-of-origin (pot) belirteci istiyor, '
-      + 'bu da çerez kavanozu gerektirir.',
+    says: 'Her yol reddedildi. Aşağıdaki durum kodlarına ve adreslerdeki parametrelere '
+      + 'bakmak gerekiyor — adreste pot= varsa proof-of-origin belirteci isteniyor demektir '
+      + 've bu çerez kavanozu gerektirir.',
   };
 }
 
 /**
- * The whole check. Defaults to the client currently in use plus the two ahead
- * of it in the chain, because "which client should we be on" is half the
- * question; ?all=1 walks the lot at roughly four seconds a client.
+ * The whole check. Defaults to the client currently in use plus the one at the
+ * head of the chain, because "which client should we be on" is half the
+ * question and two answers settle it; ?all=1 walks the lot, which takes long
+ * enough to need patience with a browser watching.
  */
 async function run(videoId, { all = false } = {}) {
   const chain = youtube.CLIENT_CHAIN;
   const active = youtube.activeClient();
   const clients = all
     ? chain
-    : [...new Set([active, ...chain.slice(0, 3)])].filter(Boolean);
+    : [...new Set([active, chain[0]])].filter(Boolean);
 
   const proxy = config.proxyMedia && config.proxyUsableByFfmpeg ? config.proxy : null;
 
@@ -181,13 +268,23 @@ async function run(videoId, { all = false } = {}) {
     rows.push(await checkClient(videoId, client, proxy));
   }
 
+  // Only worth the two extra resolves if something is actually failing, and
+  // only meaningful against a client that resolves at all.
+  const anyWorking = rows.some((r) => r.probes && r.probes.proxyWithUa
+    && r.probes.proxyWithUa.ok);
+  const resolvable = rows.find((r) => r.resolved);
+  const rotation = (config.proxy && !anyWorking && resolvable)
+    ? await checkRotation(videoId, resolvable.client)
+    : null;
+
   return {
     videoId,
     activeClient: active,
     proxy: config.maskProxy(config.proxy) || null,
     proxyUsedForMedia: Boolean(proxy),
     cookies: Boolean(config.cookies),
-    verdict: verdict(rows),
+    verdict: verdict(rows, rotation),
+    proxyRotation: rotation,
     clients: rows,
   };
 }

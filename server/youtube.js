@@ -41,12 +41,15 @@ function watchUrl(videoId) {
   return `https://www.youtube.com/watch?v=${videoId}`;
 }
 
-function baseArgs() {
+// noProxy is for the media check alone, which has to be able to ask what the
+// droplet's own address gets — the difference between the two answers is the
+// diagnosis.
+function baseArgs({ noProxy = false } = {}) {
   const args = ['--no-warnings', '--no-playlist'];
   if (config.cookies) args.push('--cookies', config.cookies);
   // A residential or mobile exit sidesteps the bot check that a datacenter
   // address walks straight into.
-  if (config.proxy) args.push('--proxy', config.proxy);
+  if (config.proxy && !noProxy) args.push('--proxy', config.proxy);
   return args;
 }
 
@@ -208,8 +211,8 @@ function cacheKey(videoId, height, requireAvc) {
  * not rely on that, since the two options are documented as an ordered list and
  * one yt-dlp release reordering them would be a silent 403 again.
  */
-function resolveArgs(format, videoId) {
-  return [...baseArgs(), '-f', format,
+function resolveArgs(format, videoId, opts) {
+  return [...baseArgs(opts), '-f', format,
     '--print', '%(http_headers.User-Agent)s',
     '-g', watchUrl(videoId)];
 }
@@ -228,9 +231,10 @@ function parseResolve(out) {
 
 // One client, no cache, no chain — for the media check, which needs to compare
 // clients against each other rather than take the first that answers.
-async function resolveWithClient(videoId, height, client) {
+async function resolveWithClient(videoId, height, client, { noProxy = false } = {}) {
   const format = `bestvideo[height<=${height}][vcodec!*=av01]+bestaudio/best[height<=${height}]/best`;
-  const out = await runYtDlp([...resolveArgs(format, videoId), ...clientArgs(client)],
+  const out = await runYtDlp(
+    [...resolveArgs(format, videoId, { noProxy }), ...clientArgs(client)],
     { timeout: 45000 });
   const streams = parseResolve(out);
   if (!streams) throw new Error('no stream URL');
