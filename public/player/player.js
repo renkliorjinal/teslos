@@ -1235,11 +1235,30 @@
   }
 
   var MAX_RETRIES = 4;
+  // Kept in step with server/index.js: the stream started and produced nothing,
+  // as opposed to a link that dropped.
+  var CLOSE_STREAM_FAILED = 4004;
 
   function handleClose(event) {
     if (!state.playing) return;
 
     if (event.code >= 4000) {
+      // 4004 is "the server resolved it, started it, and got nothing back",
+      // which is almost always the CDN refusing the client that produced the
+      // URLs. The server learns from exactly that: it stands the client down
+      // and the next resolve reaches for a different one. So the next attempt
+      // is a genuinely different attempt and worth making — stopping dead here
+      // would give up in the one moment where retrying is certain to change
+      // something.
+      if (event.code === CLOSE_STREAM_FAILED && state.retries < MAX_RETRIES) {
+        state.retries += 1;
+        setStatus('başka bir yol deneniyor… (' + state.retries + ')');
+        clearTimeout(state.resumeTimer);
+        state.resumeTimer = setTimeout(function () {
+          if (state.playing) start(currentPosition());
+        }, 1200);
+        return;
+      }
       state.playing = false;
       el.playPause.textContent = '▶';
       setStatus('durdu');
