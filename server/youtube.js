@@ -99,12 +99,50 @@ function worthRetrying(message) {
     .test(message);
 }
 
+/**
+ * Clients that resolved cleanly and whose URLs the CDN then refused.
+ *
+ * The chain can only react to failures yt-dlp reports, and this is not one of
+ * them. android_vr answers every request happily and hands back perfectly
+ * well-formed URLs; the refusal happens later, in ffmpeg, as a 403. Nothing
+ * carried that back, so the preferred client stayed pinned to it, every stream
+ * died, and the chain never advanced to `android` sitting two places behind it
+ * and working fine. From the car that is "no video plays, on any path" — for
+ * days, with no code change to blame, because the change was YouTube's.
+ *
+ * So a refusal is reported back and the client is stood down for a while. Long
+ * enough not to be retried on the next video, short enough that a client
+ * YouTube stops refusing comes back on its own.
+ */
+const refusedUntil = new Map();
+const REFUSAL_TTL_MS = 30 * 60 * 1000;
+
+function clientRefused(client) {
+  if (!client) return;
+  refusedUntil.set(client, Date.now() + REFUSAL_TTL_MS);
+  if (preferredClient === client) preferredClient = null;
+  console.warn(`[yt-dlp] ${client} resolved but the CDN refused its URLs; `
+    + `standing it down for ${REFUSAL_TTL_MS / 60000} minutes`);
+}
+
+function usableChain() {
+  const now = Date.now();
+  const usable = CLIENT_CHAIN.filter((c) => !(refusedUntil.get(c) > now));
+  // Never leave nothing to try. Every client being refused at once says the
+  // penalties are stale far more often than it says YouTube has closed the
+  // door, and failing outright would be the worse guess.
+  if (usable.length) return usable;
+  refusedUntil.clear();
+  return CLIENT_CHAIN.slice();
+}
+
 async function runWithClients(args, opts) {
   // A client that worked once is tried first next time; walking the whole
   // chain on every request would add a round trip per video.
-  const order = preferredClient
-    ? [preferredClient, ...CLIENT_CHAIN.filter((c) => c !== preferredClient)]
-    : CLIENT_CHAIN.slice();
+  const chain = usableChain();
+  const order = preferredClient && chain.includes(preferredClient)
+    ? [preferredClient, ...chain.filter((c) => c !== preferredClient)]
+    : chain;
 
   let lastError = new Error('yt-dlp produced no result');
   for (const client of order) {
@@ -114,7 +152,9 @@ async function runWithClients(args, opts) {
         preferredClient = client;
         console.log(`[yt-dlp] player_client=${client} works`);
       }
-      return out;
+      // Which client produced this matters to the caller: if the CDN refuses
+      // the URLs, that is the one to stand down.
+      return { out, client };
     } catch (err) {
       lastError = err;
       if (!worthRetrying(err.message)) throw err;
@@ -164,7 +204,7 @@ function seconds(value) {
 // Title, duration and thumbnail for the player chrome. Deliberately a --print
 // call rather than -J: the full JSON dump for a long video is several MB.
 async function getMetadata(videoId) {
-  const out = await runWithClients([
+  const { out } = await runWithClients([
     ...baseArgs(),
     '--print', printJson(['id', 'title', 'duration', 'is_live', 'uploader', 'thumbnail']),
     watchUrl(videoId),
@@ -271,9 +311,11 @@ async function resolveStreams(videoId, height, { requireAvc = false } = {}) {
       'best',
     ].join('/');
 
-  const out = await runWithClients(resolveArgs(format, videoId));
+  const { out, client } = await runWithClients(resolveArgs(format, videoId));
   const streams = parseResolve(out);
   if (!streams) throw new Error('yt-dlp returned no stream URL');
+  // Travels with the URLs so that whoever gets refused can say who to blame.
+  streams.client = client;
 
   resolveCache.set(key, { at: Date.now(), streams });
   // The map is per-video and short-lived, but a long session should not let it
@@ -323,7 +365,7 @@ async function feed(name, limit = 24) {
   }
 
   const count = Math.min(Math.max(Number(limit) || 24, 1), 50);
-  const out = await runWithClients([
+  const { out } = await runWithClients([
     ...baseArgs(),
     '--flat-playlist',
     '--playlist-end', String(count),
@@ -343,7 +385,7 @@ async function feed(name, limit = 24) {
 
 async function search(query, limit = 12) {
   const count = Math.min(Math.max(Number(limit) || 12, 1), 25);
-  const out = await runWithClients([
+  const { out } = await runWithClients([
     ...baseArgs(),
     '--flat-playlist',
     '--print', printJson(['id', 'title', 'duration', 'uploader']),
@@ -362,8 +404,10 @@ async function search(query, limit = 12) {
 
 module.exports = {
   parseVideoId, watchUrl, getMetadata, resolveStreams, forgetResolve, search,
-  feed, feedNames, activeClient, CLIENT_CHAIN, resolveWithClient,
+  feed, feedNames, activeClient, CLIENT_CHAIN, resolveWithClient, clientRefused,
   // For test/resolve.js. Silent misparsing here hands ffmpeg a URL with no
-  // header, which is a 403 twenty seconds later and nothing in between.
+  // header, which is a 403 twenty seconds later and nothing in between; and a
+  // chain that cannot stand a client down sits on a broken one indefinitely.
   _parseResolve: parseResolve,
+  _chain: { usableChain, refusedUntil, REFUSAL_TTL_MS },
 };

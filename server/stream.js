@@ -238,7 +238,7 @@ async function startVideoStream({ videoId, quality, startTime = 0, withAudio = t
       '-',
     );
 
-    return spawnFfmpeg(args, `video ${videoId}@${quality}p t=${startTime}`, 'video', videoId);
+    return spawnFfmpeg(args, `video ${videoId}@${quality}p t=${startTime}`, 'video', videoId, streams.client);
   } finally {
     releaseSlot();
   }
@@ -300,7 +300,7 @@ async function startDirectStream({ videoId, quality, startTime = 0 }) {
       '-',
     );
 
-    return spawnFfmpeg(args, `direct ${videoId}@${quality}p t=${startTime} ${copyable ? 'copy' : 'transcode'}`, 'video', videoId);
+    return spawnFfmpeg(args, `direct ${videoId}@${quality}p t=${startTime} ${copyable ? 'copy' : 'transcode'}`, 'video', videoId, streams.client);
   } finally {
     releaseSlot();
   }
@@ -377,7 +377,7 @@ async function startH264Stream({ videoId, quality, startTime = 0 }) {
     );
 
     return spawnFfmpeg(args, `h264 ${videoId}@${quality}p t=${startTime} ${copyable ? 'copy' : 'transcode'}`,
-      'video', videoId);
+      'video', videoId, streams.client);
   } finally {
     releaseSlot();
   }
@@ -408,7 +408,7 @@ async function startAudioStream({ videoId, startTime = 0 }) {
     '-',
   );
 
-  return spawnFfmpeg(args, `audio ${videoId} t=${startTime}`, 'audio', videoId);
+  return spawnFfmpeg(args, `audio ${videoId} t=${startTime}`, 'audio', videoId, streams.client);
 }
 
 /**
@@ -456,7 +456,7 @@ function lastFailure() {
   return failure;
 }
 
-function spawnFfmpeg(args, label, pool, videoId) {
+function spawnFfmpeg(args, label, pool, videoId, client) {
   const proc = spawn(config.ffmpeg, args, { stdio: ['ignore', 'pipe', 'pipe'] });
   const group = pool === 'audio' ? liveAudio : live;
   let produced = 0;
@@ -514,6 +514,12 @@ function spawnFfmpeg(args, label, pool, videoId) {
       youtube.forgetResolve(videoId);
       console.warn(`[ffmpeg] ${label} produced ${produced} bytes; dropped its cached URLs`);
     }
+    // Dropping the URLs is not enough on its own: the same client resolves the
+    // same video again and hands back URLs the CDN refuses for the same reason,
+    // forever. This is the only place that failure is visible, so it is the only
+    // place that can report it — and only on an actual refusal, never on a
+    // zero-byte exit, which a client hanging up instantly also produces.
+    if (refused && client) youtube.clientRefused(client);
     // Not a byte. Whatever ffmpeg said about that is the only explanation anyone
     // is going to get, so it is kept where the player can reach it.
     if (produced === 0) {
