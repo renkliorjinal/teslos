@@ -1532,6 +1532,17 @@
     var at = from === undefined ? state.startOffset : from;
     state.audioBase = Math.max(0, at - state.audioNudge);
     var url = fallbackAudioUrl(state.audioBase);
+    // Let go of the previous stream before asking for another. Assigning src on
+    // its own leaves the old request in flight long enough for several restarts
+    // to overlap, and the server's soundtrack budget is three — during a burst
+    // of retries that is reached in seconds, and the driver gets a picture and
+    // silence. All of this happens inside one tick, so the speakers are not
+    // released long enough for the car to hand them back to Spotify.
+    if (el.audio.getAttribute('src')) {
+      el.audio.pause();
+      el.audio.removeAttribute('src');
+      el.audio.load();
+    }
     el.audio.src = url;
     el.audio.playbackRate = 1;
     el.audio.play().catch(function (err) {

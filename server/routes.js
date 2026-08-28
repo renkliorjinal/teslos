@@ -316,7 +316,9 @@ router.get('/h264', async (req, res) => {
 router.get('/audio', async (req, res) => {
   const videoId = youtube.parseVideoId(req.query.v);
   if (!videoId) return fail(res, 400, 'Geçersiz video kimliği');
-  if (stream.audioAtCapacity()) return fail(res, 503, 'Ses akışı kapasitesi dolu');
+  // Never turned away: the oldest soundtrack is retired instead, because it is
+  // the one nobody is listening to and silence is not an acceptable answer.
+  stream.makeAudioRoom();
 
   const startTime = Math.max(0, Number(req.query.t) || 0);
 

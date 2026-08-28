@@ -82,6 +82,33 @@ function audioAtCapacity() {
   return liveAudio.size >= config.maxSessions + 1;
 }
 
+/**
+ * Room for one more soundtrack, made by retiring the oldest if it comes to it.
+ *
+ * Refusing was the wrong answer. This is one car with one driver, and a new
+ * audio request always supersedes whatever came before it — a restart, a seek,
+ * a reconnect after the CDN refused a client. The stream being retired is by
+ * definition the one nobody is listening to.
+ *
+ * It came up the moment playback started working again: a handful of retries in
+ * quick succession opened a handful of soundtracks, the browser had not finished
+ * dropping the abandoned ones, and the budget is three. The driver got a picture,
+ * silence, and "ses akışı kapasitesi dolu" — the one failure this entire path
+ * exists to prevent. The count is still bounded; it is now enforced by eviction
+ * rather than by turning the driver away.
+ */
+function makeAudioRoom() {
+  while (liveAudio.size >= config.maxSessions + 1) {
+    let oldest = null;
+    for (const session of liveAudio) {
+      if (!oldest || session.startedAt < oldest.startedAt) oldest = session;
+    }
+    if (!oldest) return;
+    console.warn(`[ffmpeg] retiring ${oldest.label} to make room for a new soundtrack`);
+    oldest.stop();
+  }
+}
+
 function reserveSlot() {
   reserved += 1;
   let done = false;
@@ -465,6 +492,7 @@ function spawnFfmpeg(args, label, pool, videoId, client) {
     proc,
     stdout: proc.stdout,
     label,
+    startedAt: Date.now(),
     lastOutput: Date.now(),
     // Maintained by the reaper sweep, not here: whether the consumer currently
     // has this pipe paused, and since when.
@@ -543,7 +571,7 @@ function spawnFfmpeg(args, label, pool, videoId, client) {
 
 module.exports = {
   startVideoStream, startDirectStream, startH264Stream, startAudioStream,
-  sessionCount, atCapacity, audioAtCapacity, lastFailure,
+  sessionCount, atCapacity, audioAtCapacity, makeAudioRoom, lastFailure,
   // For test/reaper.js. The sweep decides whether a working stream lives, so it
   // is worth testing directly rather than through forty seconds of ffmpeg.
   _reap: { reapReason, reapTick, live, liveAudio, IDLE_LIMIT_MS, HELD_LIMIT_MS },
