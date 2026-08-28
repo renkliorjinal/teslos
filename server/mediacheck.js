@@ -53,8 +53,11 @@ function probe(url, { userAgent, proxy }) {
         ok: false,
         ms,
         // The status code is the whole answer, so it is lifted out of ffmpeg's
-        // sentence rather than left for a human to find in it.
-        status: (tail.match(/\b(4\d\d|5\d\d)\b/) || [])[1] || null,
+        // sentence rather than left for a human to find in it — but only from
+        // the phrase that reports one. A bare three-digit match reads the signed
+        // query string instead and confidently reported "526" for a plain 403,
+        // which is worse than saying nothing at all.
+        status: (tail.match(/(?:returned|error)\s+(\d{3})\b/i) || [])[1] || null,
         error: redactUrls(tail).slice(0, 160) || `ffmpeg exited ${err.code}`,
       });
     });
@@ -179,9 +182,34 @@ async function checkRotation(videoId, client) {
 // Reading the matrix. Ordered by how actionable the answer is rather than by
 // how likely it is, because two of these can be true at once and the cheapest
 // fix should win.
+// yt-dlp reports no header for some clients, and then the header probe is
+// skipped rather than run — in which case the plain one already is the best
+// this client can manage and is what the verdict must read.
+function bestProxyProbe(row) {
+  const withUa = row.probes && row.probes.proxyWithUa;
+  if (withUa && !withUa.skipped) return withUa;
+  return (row.probes && row.probes.proxyNoUa) || null;
+}
+
+// A client that returns formats carrying no URL at all. YouTube's SABR rollout
+// does this, and it is nothing like a video being unavailable — the video is
+// fine, that client just cannot be downloaded from any more.
+const SABR = /format is not available|no video formats|missing a url|sabr/i;
+
 function verdict(rows, rotation) {
   const usable = rows.filter((r) => r.resolved && r.probes);
+  const sabr = rows.filter((r) => !r.resolved && SABR.test(r.error || ''));
+
   if (!usable.length) {
+    if (sabr.length) {
+      return {
+        cause: 'sabr',
+        says: `${sabr.map((r) => r.client).join(', ')} istemcilerinin hiçbiri indirilebilir `
+          + 'bir adres vermiyor — YouTube bunlara artık yalnızca SABR akışı sunuyor, '
+          + 'yani video sağlam ama bu istemcilerden çekilemiyor. Çerez kavanozu '
+          + '(YT_DLP_COOKIES) gerekiyor; girişli bir hesapla web_safari yeniden adres verir.',
+      };
+    }
     const why = rows.map((r) => r.error).filter(Boolean)[0] || '';
     return {
       cause: 'resolve',
@@ -191,7 +219,7 @@ function verdict(rows, rotation) {
     };
   }
 
-  const worksNow = usable.filter((r) => r.probes.proxyWithUa && r.probes.proxyWithUa.ok);
+  const worksNow = usable.filter((r) => { const p = bestProxyProbe(r); return p && p.ok; });
   if (worksNow.length) {
     const fixedByUa = worksNow.filter((r) => r.probes.proxyNoUa && !r.probes.proxyNoUa.ok);
     return {
@@ -240,38 +268,72 @@ function verdict(rows, rotation) {
     };
   }
 
+  // Every path refused. The URL's own parameters say a great deal about why,
+  // and now that they survive redaction they can be read rather than guessed at.
+  const addressLocked = usable.some((r) => (r.telling || []).includes('ip'));
+  const hasToken = usable.some((r) => (r.telling || []).includes('pot'));
+  const others = sabr.length
+    ? ` Ayrıca ${sabr.map((r) => r.client).join(', ')} hiç adres vermiyor (SABR).`
+    : '';
+
+  if (!addressLocked && !hasToken) {
+    return {
+      cause: 'pot',
+      says: 'Adres hiçbir IP\'ye bağlı değil (ip= parametresi yok), yani proxy de sunucunun '
+        + 'adresi de suçlu değil — aynı adres her yerden reddediliyor. Adreste pot= de yok: '
+        + 'YouTube proof-of-origin belirteci olmadan medyayı vermiyor. Çözüm çerez kavanozu '
+        + '(YT_DLP_COOKIES) ve gerekirse bir PO token sağlayıcısı.' + others,
+    };
+  }
+
   return {
     cause: 'unknown',
-    says: 'Her yol reddedildi. Aşağıdaki durum kodlarına ve adreslerdeki parametrelere '
-      + 'bakmak gerekiyor — adreste pot= varsa proof-of-origin belirteci isteniyor demektir '
-      + 've bu çerez kavanozu gerektirir.',
+    says: 'Her yol reddedildi. Adres '
+      + (addressLocked ? 'bir IP\'ye bağlı (ip= var)' : 'IP\'ye bağlı değil')
+      + ' ve belirteç '
+      + (hasToken ? 'mevcut (pot= var)' : 'yok')
+      + '. Aşağıdaki durum kodlarına bakmak gerekiyor.' + others,
   };
 }
 
 /**
- * The whole check. Defaults to the client currently in use plus the one at the
- * head of the chain, because "which client should we be on" is half the
- * question and two answers settle it; ?all=1 walks the lot, which takes long
- * enough to need patience with a browser watching.
+ * The whole check, across every client rather than a sample of them.
+ *
+ * Checking three of eight and reporting that none worked was a real cost once:
+ * the answer may simply be that some client further down the chain is fine, and
+ * that is the cheapest fix there is. So the walk covers the lot and stops the
+ * moment one of them actually delivers bytes — fast when there is an answer,
+ * and slow only in the case where the full picture is what is needed anyway.
  */
+const TOTAL_BUDGET_MS = 50000;
+
 async function run(videoId, { all = false } = {}) {
-  const chain = youtube.CLIENT_CHAIN;
   const active = youtube.activeClient();
-  const clients = all
-    ? chain
-    : [...new Set([active, chain[0]])].filter(Boolean);
+  const clients = [...new Set([active, ...youtube.CLIENT_CHAIN])].filter(Boolean);
 
   const proxy = config.proxyMedia && config.proxyUsableByFfmpeg ? config.proxy : null;
 
   const rows = [];
+  const deadline = Date.now() + TOTAL_BUDGET_MS;
   for (const client of clients) {
-    rows.push(await checkClient(videoId, client, proxy));
+    // Always finish the client in hand; never start one there is no time for.
+    if (rows.length && Date.now() > deadline && !all) {
+      rows.push({ client, skipped: 'süre doldu — tamamı için ?all=1' });
+      continue;
+    }
+    const row = await checkClient(videoId, client, proxy);
+    rows.push(row);
+    // A working client is the answer; the rest of the chain is academic.
+    const best = bestProxyProbe(row);
+    if (best && best.ok && !all) break;
   }
 
   // Only worth the two extra resolves if something is actually failing, and
   // only meaningful against a client that resolves at all.
-  const anyWorking = rows.some((r) => r.probes && r.probes.proxyWithUa
-    && r.probes.proxyWithUa.ok);
+  const anyWorking = rows.some((r) => {
+    const best = bestProxyProbe(r);
+    return best && best.ok;
+  });
   const resolvable = rows.find((r) => r.resolved);
   const rotation = (config.proxy && !anyWorking && resolvable)
     ? await checkRotation(videoId, resolvable.client)

@@ -73,8 +73,12 @@ function runYtDlp(args, { timeout = 30000 } = {}) {
 //
 // The order puts first the clients that need neither authentication nor the JS
 // player, so they sidestep the proof-of-origin dance entirely.
+// The tail of the chain is reached only when everything ahead of it has already
+// failed, so extra candidates there cost nothing and have rescued this once
+// already: YouTube's SABR rollout leaves several clients returning formats with
+// no URL at all, and which ones those are changes without warning.
 const CLIENT_CHAIN = (process.env.YT_DLP_CLIENTS
-  || 'tv_simply,android_vr,ios,android,tv,mweb,web_safari,default')
+  || 'tv_simply,android_vr,ios,android,tv,mweb,web_safari,tv_embedded,web_embedded,default')
   .split(',').map((s) => s.trim()).filter(Boolean);
 
 let preferredClient = null;
@@ -213,7 +217,13 @@ function cacheKey(videoId, height, requireAvc) {
  */
 function resolveArgs(format, videoId, opts) {
   return [...baseArgs(opts), '-f', format,
-    '--print', '%(http_headers.User-Agent)s',
+    // Where the header actually lives, in the order it should be preferred.
+    // Asking only for the top-level one returned "NA" on the very case this
+    // exists for: selecting bestvideo+bestaudio produces a merge, and a merge
+    // keeps its headers per-format under requested_formats rather than hoisting
+    // them. The check duly skipped the probe that mattered and reported nothing.
+    // Comma-separated alternatives are yt-dlp's own "first one that exists".
+    '--print', '%(requested_formats.0.http_headers.User-Agent,http_headers.User-Agent,formats.0.http_headers.User-Agent)s',
     '-g', watchUrl(videoId)];
 }
 
