@@ -26,6 +26,13 @@ const youtube = require('./youtube');
 const READ_RATE = process.env.READ_RATE || '1.5';
 const INITIAL_BURST = process.env.READ_BURST || '8';
 
+// `error` was too quiet to debug from a car. ffmpeg reports a refused fetch at
+// warning level in several of its paths, so the one stream that mattered most
+// died having said nothing at all, and the failure report could only pass on
+// that it had been killed. Warnings are the whole diagnosis here and cost a few
+// hundred bytes of a tail that is capped anyway.
+const LOGLEVEL = process.env.FFMPEG_LOGLEVEL || 'warning';
+
 let pacing = null;
 let helpText = null;
 
@@ -165,9 +172,13 @@ function reapReason(session, now) {
       ? `has been held by its consumer for ${Math.round(HELD_LIMIT_MS / 60000)} minutes`
       : null;
   }
-  return now - session.lastOutput >= IDLE_LIMIT_MS
-    ? `produced nothing for ${IDLE_LIMIT_MS / 1000}s`
-    : null;
+  if (now - session.lastOutput < IDLE_LIMIT_MS) return null;
+  // Never started and stopped part-way are different faults with different
+  // causes, and the report said neither — only that ffmpeg had been killed,
+  // which is true of both and useful for neither.
+  return session.everProduced
+    ? `stopped producing ${IDLE_LIMIT_MS / 1000}s ago`
+    : `never produced a frame in ${IDLE_LIMIT_MS / 1000}s`;
 }
 
 function reapTick(now = Date.now()) {
@@ -187,28 +198,30 @@ function reapTick(now = Date.now()) {
     const reason = reapReason(session, now);
     if (!reason) continue;
     console.warn(`[ffmpeg] ${session.label} ${reason}, killing it`);
+    // Carried to the close handler so the driver is told what happened rather
+    // than which signal was used to do it.
+    session.reapedFor = reason;
     session.stop();
   }
 }
 
 setInterval(reapTick, 5000).unref();
 
-// Retrying an HTTP status, as opposed to a dropped socket. Probed rather than
-// assumed: the option is old, but so is the droplet's ffmpeg, and passing an
-// unknown one makes ffmpeg refuse the input outright rather than ignore it —
-// which would turn an intermittent failure into a total one.
-let httpRetry = null;
-
-function httpRetryArgs() {
-  if (httpRetry) return httpRetry;
-  httpRetry = ffmpegHelp().includes('-reconnect_on_http_error')
-    ? ['-reconnect_on_http_error', '4xx,5xx']
-    : [];
-  console.log(httpRetry.length
-    ? '[ffmpeg] will reconnect on 4xx/5xx as well as on dropped sockets'
-    : '[ffmpeg] no -reconnect_on_http_error in this build; a 403 will not be retried here');
-  return httpRetry;
-}
+// Not reconnecting on an HTTP status, which was tried and was a mistake.
+//
+// The idea was that a 403 on an address-locked URL might be a rotating proxy
+// handing out a different exit per connection, in which case reopening the
+// connection draws again and costs nothing. Measuring it settled that: twelve
+// resolves, one address, no rotation. Retrying the same refusal from the same
+// address can only ever fail — and it failed *silently*, because with reconnect
+// enabled ffmpeg demotes the 403 to a warning that -loglevel error hides. A
+// refusal that used to arrive in 400ms with its reason attached became thirty
+// seconds of nothing, ending in the reaper's SIGKILL and a failure report that
+// said only that ffmpeg had been killed. It also cost the client demotion,
+// which keys off exactly that message.
+//
+// Left here as a note rather than an option, because it is a plausible-sounding
+// idea that makes things worse.
 
 // HTTP inputs from YouTube's CDN drop often enough that reconnects are not
 // optional. These flags are per-input and must precede the -i they apply to.
@@ -228,19 +241,9 @@ function inputArgs(url, startTime, userAgent) {
       '-reconnect_on_network_error', '1',
       '-reconnect_delay_max', '10',
     );
-    // A 403 is worth reconnecting on, which is not obvious and turns out to be
-    // the difference between "plays" and "several failures then plays".
-    //
-    // Some of these URLs carry an `ip` parameter: googlevideo has signed them
-    // for the address that resolved them and will serve them to nobody else.
-    // The resolve leaves through the proxy, the fetch leaves through the proxy
-    // again — and a rotating residential proxy gives out a different exit per
-    // connection, so the two are often not the same address at all. Retrying
-    // opens a fresh connection and draws again, which is a gamble, but a cheap
-    // and invisible one: ffmpeg does it in a second without the page ever
-    // knowing, where the client-side retry costs a re-resolve, a reconnect and
-    // a visible message on the screen.
-    args.push(...httpRetryArgs());
+    // Deliberately no -reconnect_on_http_error: see the note above. A refusal
+    // must fail fast and loudly so the client that produced the URL gets stood
+    // down, which is the thing that actually recovers.
     // YouTube binds a media URL to the address that resolved it, so the fetch
     // has to leave by the same door or the CDN answers 403.
     if (config.proxyMedia && config.proxyUsableByFfmpeg) {
@@ -270,7 +273,7 @@ async function startVideoStream({ videoId, quality, startTime = 0, withAudio = t
     const preset = config.QUALITY[quality] || config.QUALITY[config.DEFAULT_QUALITY];
     const streams = await youtube.resolveStreams(videoId, quality);
 
-    const args = ['-hide_banner', '-loglevel', 'error', ...pacingArgs()];
+    const args = ['-hide_banner', '-loglevel', LOGLEVEL, ...pacingArgs()];
     args.push(...inputArgs(streams.video, startTime, streams.userAgent));
 
     // DASH gives video and audio as separate URLs; progressive gives one muxed
@@ -336,7 +339,7 @@ async function startDirectStream({ videoId, quality, startTime = 0 }) {
       console.log(`[direct] ${videoId}: no H.264 at ${quality}p, transcoding instead`);
     }
 
-    const args = ['-hide_banner', '-loglevel', 'error'];
+    const args = ['-hide_banner', '-loglevel', LOGLEVEL];
     args.push(...inputArgs(streams.video, startTime, streams.userAgent));
     if (streams.audio) args.push(...inputArgs(streams.audio, startTime, streams.userAgent));
 
@@ -406,7 +409,7 @@ async function startH264Stream({ videoId, quality, startTime = 0 }) {
       console.log(`[h264] ${videoId}: no H.264 at ${quality}p, transcoding instead`);
     }
 
-    const args = ['-hide_banner', '-loglevel', 'error', ...pacingArgs()];
+    const args = ['-hide_banner', '-loglevel', LOGLEVEL, ...pacingArgs()];
     args.push(...inputArgs(streams.video, startTime, streams.userAgent));
     args.push('-map', '0:v:0', '-an');
 
@@ -461,7 +464,7 @@ async function startAudioStream({ videoId, startTime = 0 }) {
 
   // The soundtrack is the master clock, so a stall in it stalls everything.
   // Paced the same way, and it is a tenth of the video's bitrate anyway.
-  const args = ['-hide_banner', '-loglevel', 'error', ...pacingArgs()];
+  const args = ['-hide_banner', '-loglevel', LOGLEVEL, ...pacingArgs()];
   args.push(...inputArgs(url, startTime, streams.userAgent));
   args.push(
     '-vn',
@@ -533,9 +536,11 @@ function spawnFfmpeg(args, label, pool, videoId, client) {
     startedAt: Date.now(),
     lastOutput: Date.now(),
     // Maintained by the reaper sweep, not here: whether the consumer currently
-    // has this pipe paused, and since when.
+    // has this pipe paused, and since when, and why it was killed if it was.
     held: false,
     heldSince: 0,
+    everProduced: false,
+    reapedFor: null,
     stop() {
       try {
         proc.kill('SIGKILL');
@@ -558,6 +563,7 @@ function spawnFfmpeg(args, label, pool, videoId, client) {
   // Doubles as the liveness signal the reaper reads.
   proc.stdout.on('data', (chunk) => {
     session.lastOutput = Date.now();
+    session.everProduced = true;
     produced += chunk.length;
   });
 
@@ -573,25 +579,34 @@ function spawnFfmpeg(args, label, pool, videoId, client) {
     if (code !== 0 && !signal) {
       console.error(`[ffmpeg] ${label} exited ${code}: ${tail}`);
     }
-    // Nothing came out at all, or the CDN refused midway. Either way the media URL
-    // this was built from is not worth handing to the next attempt.
-    const refused = /40[0-9] |403|Forbidden|Server returned|Invalid data/i.test(stderrTail);
-    if (videoId && (produced === 0 || refused)) {
+    // Nothing came out at all, or the CDN went sour midway. Either way the media
+    // URL this was built from is not worth handing to the next attempt.
+    const suspect = /40[0-9] |403|Forbidden|Server returned|Invalid data/i.test(stderrTail);
+    if (videoId && (produced === 0 || suspect)) {
       youtube.forgetResolve(videoId);
       console.warn(`[ffmpeg] ${label} produced ${produced} bytes; dropped its cached URLs`);
     }
     // Dropping the URLs is not enough on its own: the same client resolves the
     // same video again and hands back URLs the CDN refuses for the same reason,
     // forever. This is the only place that failure is visible, so it is the only
-    // place that can report it — and only on an actual refusal, never on a
-    // zero-byte exit, which a client hanging up instantly also produces.
-    if (refused && client) youtube.clientRefused(client);
+    // place that can report it.
+    //
+    // Narrower than the test above, deliberately. Standing a client down for
+    // half an hour on the strength of a stray "Invalid data" — which is an
+    // ordinary warning now that warnings are captured — would take a working
+    // client out of the chain for no reason.
+    const denied = /\b40[0-9]\b|Forbidden|access denied/i.test(stderrTail);
+    if (denied && client) youtube.clientRefused(client);
     // Not a byte. Whatever ffmpeg said about that is the only explanation anyone
-    // is going to get, so it is kept where the player can reach it.
+    // is going to get, so it is kept where the player can reach it — and if we
+    // were the ones who killed it, say what for. "SIGKILL" describes the method
+    // and not the fault, and was the whole of one failure report.
     if (produced === 0) {
-      session.failure = tail || (signal
-        ? `ffmpeg ${signal} ile durduruldu, hiç görüntü üretmedi`
-        : `ffmpeg ${code} ile çıktı, hiç görüntü üretmedi`);
+      session.failure = tail
+        || (session.reapedFor && `ffmpeg ${session.reapedFor}`)
+        || (signal
+          ? `ffmpeg ${signal} ile durduruldu, hiç görüntü üretmedi`
+          : `ffmpeg ${code} ile çıktı, hiç görüntü üretmedi`);
       noteFailure(label, videoId, session.failure);
     }
   });
