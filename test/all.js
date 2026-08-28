@@ -20,6 +20,7 @@ const helpers = require('./helpers');
 // browser suites have spent five minutes proving it.
 const SUITES = [
   { name: 'drift', needs: [] },
+  { name: 'reaper', needs: [] },
   { name: 'slots', needs: ['ffmpeg'] },
   { name: 'cookies', needs: ['ffmpeg'] },
   { name: 'statedir', needs: ['ffmpeg'] },

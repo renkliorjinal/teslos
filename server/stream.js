@@ -93,18 +93,70 @@ function reserveSlot() {
 }
 
 // A stream that has produced nothing for this long is not coming back: the CDN
-// dropped it, or the client vanished without the socket closing. Left alone it
-// holds a slot and, worse, a share of the CPU.
+// dropped it, or ffmpeg wedged. Left alone it holds a slot and, worse, a share
+// of the CPU.
 const IDLE_LIMIT_MS = 30000;
 
-setInterval(() => {
-  const now = Date.now();
+// Being quiet and being dead are not the same thing, and the difference is the
+// consumer. Both of them throttle by pausing this pipe — the socket writer when
+// the client reports its decoder full, Node's own pipe() when the browser stops
+// reading the response body — and a paused Readable emits no 'data' events at
+// all. So the timestamp those events maintain stops advancing, and silence from
+// a held stream says nothing whatever about ffmpeg's health.
+//
+// That only became fatal when the server started sending faster than real time.
+// Under -re the pipe drained continuously and a pause was a passing thing; under
+// -readrate 1.5 the consumer is full most of the time *by design*, so the idle
+// clock ran out on streams that were working exactly as intended and this reaper
+// killed every one of them thirty seconds in — on all three transports at once,
+// and on the soundtrack beside them, because every one of them is a paused pipe.
+//
+// A held stream is therefore left alone. The case the idle limit was really
+// guarding against — a consumer gone without its socket closing — is already
+// covered at both ends (ws.on('close') and res.on('close') both stop the
+// session), so what remains here is a long backstop rather than the front line.
+const HELD_LIMIT_MS = 10 * 60 * 1000;
+
+/**
+ * Why this session should be killed, or null to leave it alone.
+ *
+ * Split out from the sweep so the policy can be tested without an ffmpeg, a CDN
+ * and a forty-second wait — which is the only reason the original went unnoticed
+ * for as long as it did.
+ */
+function reapReason(session, now) {
+  if (session.held) {
+    return now - session.heldSince >= HELD_LIMIT_MS
+      ? `has been held by its consumer for ${Math.round(HELD_LIMIT_MS / 60000)} minutes`
+      : null;
+  }
+  return now - session.lastOutput >= IDLE_LIMIT_MS
+    ? `produced nothing for ${IDLE_LIMIT_MS / 1000}s`
+    : null;
+}
+
+function reapTick(now = Date.now()) {
   for (const session of [...live, ...liveAudio]) {
-    if (now - session.lastOutput < IDLE_LIMIT_MS) continue;
-    console.warn(`[ffmpeg] ${session.label} produced nothing for 30s, killing it`);
+    const stdout = session.stdout;
+    const held = Boolean(stdout && typeof stdout.isPaused === 'function' && stdout.isPaused());
+
+    if (held) {
+      if (!session.held) session.heldSince = now;
+      // The idle clock measures ffmpeg's silence, so it must not run while the
+      // consumer is the one keeping it quiet — otherwise a stream resuming from
+      // a long hold would be reaped on its first tick back.
+      session.lastOutput = now;
+    }
+    session.held = held;
+
+    const reason = reapReason(session, now);
+    if (!reason) continue;
+    console.warn(`[ffmpeg] ${session.label} ${reason}, killing it`);
     session.stop();
   }
-}, 5000).unref();
+}
+
+setInterval(reapTick, 5000).unref();
 
 // HTTP inputs from YouTube's CDN drop often enough that reconnects are not
 // optional. These flags are per-input and must precede the -i they apply to.
@@ -364,6 +416,10 @@ function spawnFfmpeg(args, label, pool, videoId) {
     stdout: proc.stdout,
     label,
     lastOutput: Date.now(),
+    // Maintained by the reaper sweep, not here: whether the consumer currently
+    // has this pipe paused, and since when.
+    held: false,
+    heldSince: 0,
     stop() {
       try {
         proc.kill('SIGKILL');
@@ -421,4 +477,7 @@ function spawnFfmpeg(args, label, pool, videoId) {
 module.exports = {
   startVideoStream, startDirectStream, startH264Stream, startAudioStream,
   sessionCount, atCapacity, audioAtCapacity,
+  // For test/reaper.js. The sweep decides whether a working stream lives, so it
+  // is worth testing directly rather than through forty seconds of ffmpeg.
+  _reap: { reapReason, reapTick, live, liveAudio, IDLE_LIMIT_MS, HELD_LIMIT_MS },
 };
