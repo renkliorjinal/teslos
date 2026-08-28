@@ -33,6 +33,20 @@ const server = http.createServer(app);
 const CLOSE_BAD_REQUEST = 4003;
 const CLOSE_AT_CAPACITY = 4001;
 const CLOSE_RESOLVE_FAILED = 4002;
+// Resolved fine, started fine, produced nothing. Distinguished from a dropped
+// link because the player's response to the two is opposite: retry the one,
+// explain the other. Conflating them is how a driver ends up watching an
+// attempt counter climb with no idea what is wrong.
+const CLOSE_STREAM_FAILED = 4004;
+
+// A close reason is capped at 123 bytes on the wire and Turkish spends two on
+// every accented character, so this cuts by bytes rather than characters — over
+// the cap, ws throws and the client learns nothing at all.
+function closeReason(text) {
+  const buf = Buffer.from(String(text || ''), 'utf8');
+  if (buf.length <= 117) return buf.toString('utf8');
+  return `${buf.subarray(0, 117).toString('utf8').replace(/�+$/, '')}…`;
+}
 
 const wss = new WebSocketServer({ noServer: true });
 const speedWss = new WebSocketServer({ noServer: true });
@@ -103,7 +117,7 @@ wss.on('connection', async (ws, req) => {
   try {
     session = await stream.startVideoStream({ videoId, quality, startTime, withAudio });
   } catch (err) {
-    if (!closed) ws.close(CLOSE_RESOLVE_FAILED, err.message.slice(0, 100));
+    if (!closed) ws.close(CLOSE_RESOLVE_FAILED, closeReason(err.message));
     return;
   }
 
@@ -228,7 +242,11 @@ wss.on('connection', async (ws, req) => {
   });
 
   session.proc.on('close', () => {
-    if (ws.readyState === ws.OPEN) ws.close(1000, 'Akis bitti');
+    if (ws.readyState !== ws.OPEN) return;
+    // spawnFfmpeg sets this only when not a single byte came out, which is never
+    // a link problem and never worth retrying blind.
+    if (session.failure) ws.close(CLOSE_STREAM_FAILED, closeReason(session.failure));
+    else ws.close(1000, 'Akis bitti');
   });
 });
 

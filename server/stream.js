@@ -406,6 +406,40 @@ async function startAudioStream({ videoId, startTime = 0 }) {
   return spawnFfmpeg(args, `audio ${videoId} t=${startTime}`, 'audio', videoId);
 }
 
+/**
+ * The last thing that went wrong, kept so it can be read from the car.
+ *
+ * A stream that dies having produced nothing closes its socket like any other,
+ * and the player cannot tell that from a link that dropped — so the driver gets
+ * "Bağlantı bekleniyor…" and a rising attempt count while the actual explanation
+ * sits in journalctl on a box they are a hundred miles from. ffmpeg always knew
+ * why; nothing carried it to the screen.
+ */
+let failure = null;
+
+// ffmpeg quotes the whole media URL back at us, which is a kilometre of signed
+// query string, and a proxy URL can carry credentials. Neither belongs in an API
+// response, and the useful half of the message is never in either.
+function redact(text) {
+  return String(text || '')
+    .replace(/\/\/[^@\s/]*@/g, '//***@')
+    .replace(/(https?:\/\/[^\s?]+)\?\S*/g, '$1?…')
+    .trim();
+}
+
+function noteFailure(label, videoId, detail) {
+  failure = {
+    at: new Date().toISOString(),
+    label,
+    videoId: videoId || null,
+    detail: redact(detail).slice(0, 300),
+  };
+}
+
+function lastFailure() {
+  return failure;
+}
+
 function spawnFfmpeg(args, label, pool, videoId) {
   const proc = spawn(config.ffmpeg, args, { stdio: ['ignore', 'pipe', 'pipe'] });
   const group = pool === 'audio' ? liveAudio : live;
@@ -453,8 +487,9 @@ function spawnFfmpeg(args, label, pool, videoId) {
 
   proc.on('close', (code, signal) => {
     release();
+    const tail = stderrTail.trim().split('\n').slice(-2).join(' ');
     if (code !== 0 && !signal) {
-      console.error(`[ffmpeg] ${label} exited ${code}: ${stderrTail.trim().split('\n').slice(-2).join(' ')}`);
+      console.error(`[ffmpeg] ${label} exited ${code}: ${tail}`);
     }
     // Nothing came out at all, or the CDN refused midway. Either way the media URL
     // this was built from is not worth handing to the next attempt.
@@ -463,10 +498,20 @@ function spawnFfmpeg(args, label, pool, videoId) {
       youtube.forgetResolve(videoId);
       console.warn(`[ffmpeg] ${label} produced ${produced} bytes; dropped its cached URLs`);
     }
+    // Not a byte. Whatever ffmpeg said about that is the only explanation anyone
+    // is going to get, so it is kept where the player can reach it.
+    if (produced === 0) {
+      session.failure = tail || (signal
+        ? `ffmpeg ${signal} ile durduruldu, hiç görüntü üretmedi`
+        : `ffmpeg ${code} ile çıktı, hiç görüntü üretmedi`);
+      noteFailure(label, videoId, session.failure);
+    }
   });
 
   proc.on('error', (err) => {
     release();
+    session.failure = `ffmpeg başlatılamadı: ${err.message}`;
+    noteFailure(label, videoId, session.failure);
     console.error(`[ffmpeg] ${label} failed to start: ${err.message}`);
   });
 
@@ -476,7 +521,7 @@ function spawnFfmpeg(args, label, pool, videoId) {
 
 module.exports = {
   startVideoStream, startDirectStream, startH264Stream, startAudioStream,
-  sessionCount, atCapacity, audioAtCapacity,
+  sessionCount, atCapacity, audioAtCapacity, lastFailure,
   // For test/reaper.js. The sweep decides whether a working stream lives, so it
   // is worth testing directly rather than through forty seconds of ffmpeg.
   _reap: { reapReason, reapTick, live, liveAudio, IDLE_LIMIT_MS, HELD_LIMIT_MS },

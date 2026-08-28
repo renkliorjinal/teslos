@@ -171,7 +171,11 @@
   .toast { position: absolute; top: 24px; left: 50%; transform: translateX(-50%); z-index: 30;
            background: #212121; border: 1px solid var(--line); color: var(--text);
            padding: 16px 22px; border-radius: 12px; font-size: .95rem; max-width: 80vw;
-           display: none; box-shadow: 0 8px 28px rgba(0,0,0,.6); }
+           display: none; box-shadow: 0 8px 28px rgba(0,0,0,.6);
+           /* Server errors arrive as their own paragraph under the summary, and
+              ffmpeg's are one long unbroken line that would otherwise widen the
+              box off the screen. */
+           white-space: pre-line; overflow-wrap: anywhere; }
 </style>
 </head>
 <body>

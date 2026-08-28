@@ -44,6 +44,10 @@ router.get('/health', (req, res) => {
     ])],
     proxy: config.maskProxy(config.proxy) || null,
     proxyMedia: config.proxyMedia && config.proxyUsableByFfmpeg,
+    // The last stream that produced nothing, and what ffmpeg said about it.
+    // Health is polled by the outage screen anyway, so this reaches the car
+    // without anyone having to be sitting in front of the server.
+    lastFailure: stream.lastFailure(),
   });
 });
 

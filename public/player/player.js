@@ -89,6 +89,8 @@
     lastDataAt: 0,
     lastFrameAt: 0,
     outageTries: 0,
+    failureShown: null,   // last server-side explanation already toasted
+    serverFailures: 0,    // rounds where the server answered and still sent nothing
     retries: 0,
     outageAt: 0,
     reconnectTimer: null,
@@ -1000,6 +1002,7 @@
         state.lastDataAt = Date.now();
         state.outageTries = 0;
         state.retries = 0;
+        state.serverFailures = 0;
         if (previous) previous.call(socket, event);
       };
     })(0);
@@ -1084,6 +1087,33 @@
     return Math.min(30000, 3000 * Math.pow(2, Math.min(state.outageTries, 4)));
   }
 
+  // Said once per distinct failure rather than on every poll: the retry loop
+  // visits this every few seconds, and the same sentence toasted eight times is
+  // worse than not saying it.
+  function reportServerFailure(f) {
+    if (!f || !f.detail) return false;
+    if (Date.now() - Date.parse(f.at) > 120000) return false; // stale, another video
+    state.serverFailures += 1;
+    if (f.detail === state.failureShown) return true;
+    state.failureShown = f.detail;
+    toast('Sunucu görüntü üretemedi: ' + f.detail);
+    return true;
+  }
+
+  // Reaching the server and still being sent nothing is not an outage. It will
+  // repeat, and looping on it behind a rising attempt count is exactly how the
+  // last fault went unexplained for days — the screen said "Bağlantı bekleniyor…
+  // (4. deneme)" while the link was perfectly fine and the real answer sat in a
+  // log. Past a few rounds, stop and say what happened.
+  var SERVER_FAILURES_BEFORE_GIVING_UP = 3;
+
+  function abandonOutage() {
+    state.waiting = false;
+    clearTimeout(state.reconnectTimer);
+    el.recut.classList.remove('on');
+    giveUp();
+  }
+
   function pollForConnection() {
     clearTimeout(state.reconnectTimer);
     state.reconnectTimer = setTimeout(function () {
@@ -1092,6 +1122,15 @@
         .then(function (r) { return r.ok ? r.json() : null; })
         .then(function (health) {
           if (!health || !health.ok) throw new Error('not ready');
+          // The server answered, so the link is not what is wrong — and an
+          // outage screen counting attempts is about to say otherwise for the
+          // rest of the journey. If ffmpeg failed and said why, that is the
+          // answer, and it is the only place the driver can be told it.
+          var explained = reportServerFailure(health.lastFailure);
+          if (explained && state.serverFailures >= SERVER_FAILURES_BEFORE_GIVING_UP) {
+            abandonOutage();
+            return;
+          }
           leaveOutage();
         })
         .catch(function () {
@@ -1252,10 +1291,16 @@
     el.playPause.textContent = '▶';
     el.recut.classList.remove('on');
     setStatus('başlatılamadı');
-    toast('Bu video başlatılamıyor. Sunucu birkaç kez denedi ve hiç görüntü gelmedi.', {
+    // The retry button replaces whatever toast was up, so the explanation has to
+    // travel with it or it is lost at the moment it is most wanted.
+    toast('Bu video başlatılamıyor. Sunucu birkaç kez denedi ve hiç görüntü gelmedi.'
+      + (state.failureShown ? '\n\n' + state.failureShown : ''), {
       action: 'TEKRAR DENE',
       onAction: function () {
         state.retries = 0;
+        state.serverFailures = 0;
+        state.failureShown = null;
+        state.waiting = false;
         state.playing = true;
         start(state.waitingAt || state.startOffset);
       },
