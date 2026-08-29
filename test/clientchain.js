@@ -96,13 +96,26 @@ rep.check('refusing nothing is harmless',
 // not from memory. tv_downgraded is also token-free but requires a cookie jar.
 const NO_TOKEN_NEEDED = ['android_vr', 'tv', 'web_embedded'];
 
-rep.check('the chain leads with clients that need no proof-of-origin token',
-  NO_TOKEN_NEEDED.includes(CHAIN[0]), CHAIN.slice(0, 3).join(','));
-rep.check('and all three of them come before any client that does',
-  CHAIN.slice(0, 3).every((c) => NO_TOKEN_NEEDED.includes(c)), CHAIN.join(','));
-rep.check('android_vr leads, being the only one needing no JS player either',
-  CHAIN[0] === 'android_vr', CHAIN[0]);
+// yt-dlp's INNERTUBE_CLIENTS keys. A name that is not one of these is silently
+// ignored by yt-dlp, so a typo here costs a wasted attempt every time the chain
+// reaches it and shows up nowhere — `tv_embedded` sat in the chain doing that.
+const KNOWN = ['web', 'web_safari', 'web_embedded', 'web_music', 'web_creator',
+  'android', 'android_vr', 'ios', 'mweb', 'tv', 'tv_downgraded', 'tv_simply',
+  // Ours, meaning "pass no player_client at all and take yt-dlp's default".
+  'default'];
+
+// The table is a hint, not the rule. The car contradicted it in both directions
+// — android fetched media it supposedly needs a token for, android_vr was
+// refused without needing one — so the order here only decides who is asked
+// first. resolvePlayable settles who is used by actually fetching bytes.
+
+rep.check('the chain leads with a client that needs no proof-of-origin token',
+  NO_TOKEN_NEEDED.includes(CHAIN[0]), CHAIN[0]);
+rep.check('all three token-free clients are in the chain at all',
+  NO_TOKEN_NEEDED.every((c) => CHAIN.includes(c)), CHAIN.join(','));
 rep.check('tv_embedded is gone, since yt-dlp has no such client',
   !CHAIN.includes('tv_embedded'));
+rep.check('every name is one yt-dlp actually has',
+  CHAIN.every((c) => KNOWN.includes(c)), CHAIN.filter((c) => !KNOWN.includes(c)).join(',') || 'all known');
 
 rep.done('clientchain');

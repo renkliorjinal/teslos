@@ -24,6 +24,7 @@ const SUITES = [
   { name: 'resolve', needs: [] },
   { name: 'clientchain', needs: [] },
   { name: 'audioroom', needs: [] },
+  { name: 'playable', needs: [] },
   { name: 'slots', needs: ['ffmpeg'] },
   { name: 'cookies', needs: ['ffmpeg'] },
   { name: 'statedir', needs: ['ffmpeg'] },

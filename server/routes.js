@@ -30,6 +30,9 @@ router.get('/health', (req, res) => {
     bitrates: Object.fromEntries(Object.entries(config.QUALITY)
       .map(([height, preset]) => [height, parseInt(preset.videoBitrate, 10) * 1000])),
     ytClient: youtube.activeClient(),
+    // The one that has actually delivered bytes, which is not always the one
+    // that answered — and only the first of those can play anything.
+    playingClient: youtube.playingClient(),
     cookies: Boolean(config.cookies),
     google: oauth.signedIn(),
     // Which tabs the picker should offer. The cookie jar can serve everything;

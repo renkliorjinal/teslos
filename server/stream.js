@@ -1,6 +1,6 @@
 'use strict';
 
-const { spawn, execFileSync } = require('child_process');
+const { spawn, execFile, execFileSync } = require('child_process');
 const config = require('./config');
 const youtube = require('./youtube');
 
@@ -258,6 +258,45 @@ function inputArgs(url, startTime, userAgent) {
 }
 
 /**
+ * Does this URL actually give us bytes?
+ *
+ * Asked before committing to a stream, because the alternative has been a week
+ * of finding out thirty seconds later and from the driver's seat. Built with
+ * the same input arguments the real fetch will use — same proxy, same header —
+ * so a pass here means the real thing will work, and a failure names the client
+ * to stand down.
+ *
+ * -t 0.4 with -c copy: no decoding, no transcoding, just enough of the stream
+ * to prove the CDN will serve it.
+ */
+const PROBE_TIMEOUT_MS = 12000;
+
+function fetchable(url, userAgent) {
+  const args = ['-hide_banner', '-loglevel', LOGLEVEL,
+    ...inputArgs(url, 0, userAgent),
+    '-t', '0.4', '-c', 'copy', '-f', 'null', '-'];
+
+  return new Promise((resolve) => {
+    execFile(config.ffmpeg, args, { timeout: PROBE_TIMEOUT_MS }, (err, stdout, stderr) => {
+      if (!err) return resolve({ ok: true });
+      const tail = String(stderr || '').trim().split('\n').filter(Boolean).slice(-1)[0] || '';
+      resolve({ ok: false, why: redact(tail).slice(0, 120) || `ffmpeg ${err.code}` });
+    });
+  });
+}
+
+// Both halves have to be fetchable, not just the first. A DASH pair is two
+// separate URLs and two separate connections, and a video that plays in silence
+// is not a video that plays.
+async function bothFetchable(streams) {
+  const video = await fetchable(streams.video, streams.userAgent);
+  if (!video.ok) return { ok: false, why: `video ${video.why}` };
+  if (!streams.audio) return { ok: true };
+  const audio = await fetchable(streams.audio, streams.userAgent);
+  return audio.ok ? { ok: true } : { ok: false, why: `ses ${audio.why}` };
+}
+
+/**
  * MPEG1 video (+ optional MP2 audio) in an MPEG-TS container on stdout.
  *
  * The whole point of this format is that JSMpeg can decode it in plain JS and
@@ -271,7 +310,7 @@ async function startVideoStream({ videoId, quality, startTime = 0, withAudio = t
   const releaseSlot = reserveSlot();
   try {
     const preset = config.QUALITY[quality] || config.QUALITY[config.DEFAULT_QUALITY];
-    const streams = await youtube.resolveStreams(videoId, quality);
+    const streams = await youtube.resolvePlayable(videoId, quality, { verify: bothFetchable });
 
     const args = ['-hide_banner', '-loglevel', LOGLEVEL, ...pacingArgs()];
     args.push(...inputArgs(streams.video, startTime, streams.userAgent));
@@ -332,10 +371,10 @@ async function startDirectStream({ videoId, quality, startTime = 0 }) {
     let streams;
     let copyable = true;
     try {
-      streams = await youtube.resolveStreams(videoId, quality, { requireAvc: true });
+      streams = await youtube.resolvePlayable(videoId, quality, { requireAvc: true, verify: bothFetchable });
     } catch (err) {
       copyable = false;
-      streams = await youtube.resolveStreams(videoId, quality);
+      streams = await youtube.resolvePlayable(videoId, quality, { verify: bothFetchable });
       console.log(`[direct] ${videoId}: no H.264 at ${quality}p, transcoding instead`);
     }
 
@@ -402,10 +441,10 @@ async function startH264Stream({ videoId, quality, startTime = 0 }) {
     let streams;
     let copyable = true;
     try {
-      streams = await youtube.resolveStreams(videoId, quality, { requireAvc: true });
+      streams = await youtube.resolvePlayable(videoId, quality, { requireAvc: true, verify: bothFetchable });
     } catch (err) {
       copyable = false;
-      streams = await youtube.resolveStreams(videoId, quality);
+      streams = await youtube.resolvePlayable(videoId, quality, { verify: bothFetchable });
       console.log(`[h264] ${videoId}: no H.264 at ${quality}p, transcoding instead`);
     }
 
@@ -459,7 +498,7 @@ async function startH264Stream({ videoId, quality, startTime = 0 }) {
  * <audio> element is the known-good escape hatch — Tesla does not gate those.
  */
 async function startAudioStream({ videoId, startTime = 0 }) {
-  const streams = await youtube.resolveStreams(videoId, 480);
+  const streams = await youtube.resolvePlayable(videoId, 480, { verify: bothFetchable });
   const url = streams.audio || streams.video;
 
   // The soundtrack is the master clock, so a stall in it stalls everything.

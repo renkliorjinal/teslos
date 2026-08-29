@@ -85,15 +85,20 @@ function runYtDlp(args, { timeout = 30000 } = {}) {
  *   web, web_safari, web_music, web_creator, android, ios, mweb, tv_simply
  *                 all REQUIRE a GVS token: they resolve, and then 403
  *
- * So the three that need nothing lead, and the rest are kept only as a last
- * resort — they are still useful for metadata, which needs no token at all, and
- * YouTube's policy moves often enough that today's refusal is not permanent.
+ * That table is a starting hint and nothing more, because the car disagreed
+ * with it outright: `android`, which the table says requires a token, fetched
+ * media fine; `android_vr`, which needs none, was refused. Whatever the reason
+ * — a rollout in progress, something regional — the rule cannot be predicted
+ * from here, and acting as though it could is what put a working client behind
+ * two broken ones. resolvePlayable settles it by fetching, so this order only
+ * decides who gets asked first, not who gets used.
  *
- * `tv_embedded` was in this list and is not a yt-dlp client at all; it was added
- * on a hunch and would have failed every time it was reached.
+ * Both clients with any evidence in their favour lead. `tv_embedded` was in
+ * this list on a hunch and is not a yt-dlp client at all; it would have failed
+ * every time it was reached.
  */
 const CLIENT_CHAIN = (process.env.YT_DLP_CLIENTS
-  || 'android_vr,tv,web_embedded,web_safari,mweb,android,ios,tv_simply,default')
+  || 'android_vr,android,tv,web_embedded,web_safari,mweb,ios,tv_simply,default')
   .split(',').map((s) => s.trim()).filter(Boolean);
 
 let preferredClient = null;
@@ -132,10 +137,20 @@ function worthRetrying(message) {
 const refusedUntil = new Map();
 const REFUSAL_TTL_MS = 30 * 60 * 1000;
 
+let provenClient = null;
+let provenAt = 0;
+const PROVEN_TTL_MS = 10 * 60 * 1000;
+
+
 function clientRefused(client) {
   if (!client) return;
   refusedUntil.set(client, Date.now() + REFUSAL_TTL_MS);
   if (preferredClient === client) preferredClient = null;
+  // And it is no longer proven. Without this the trust granted by one
+  // successful fetch outlives the evidence for it: verification is skipped for
+  // a client already known to be refused, so the walk never happens and the
+  // stream 403s with nothing having looked. test/playable.js caught this.
+  if (provenClient === client) { provenClient = null; provenAt = 0; }
   console.warn(`[yt-dlp] ${client} resolved but the CDN refused its URLs; `
     + `standing it down for ${REFUSAL_TTL_MS / 60000} minutes`);
 }
@@ -185,6 +200,66 @@ async function runWithClients(args, opts) {
 
 function activeClient() {
   return preferredClient;
+}
+
+// Which client has actually been seen to fetch media, as opposed to merely
+// answering. The difference between those two is this whole week.
+function playingClient() {
+  return provenRecently(provenClient) ? provenClient : null;
+}
+
+/**
+ * Resolving to URLs that have actually been shown to work.
+ *
+ * Every round of this has failed the same way. A client resolves cleanly, hands
+ * back well-formed URLs, and the refusal arrives much later inside ffmpeg —
+ * so nothing upstream can tell a good client from a useless one, and the answer
+ * has been guessed at from the outside over and over. The guesses have been
+ * wrong in both directions: yt-dlp's own table says android needs a token and
+ * android_vr does not, and what was measured in the car was the exact opposite.
+ *
+ * The rule cannot be predicted, so it should not be predicted. The caller hands
+ * in a way to verify — fetch the first few kilobytes of the URL exactly as the
+ * real stream would — and this walks the chain until something passes. Whatever
+ * YouTube is doing this week, the client that plays is the one that gets used.
+ *
+ * A client that has just proved itself is trusted for a while, so the cost is
+ * paid once after a restart rather than on every video.
+ */
+function clientProven(client) {
+  if (provenClient !== client) console.log(`[yt-dlp] ${client} fetches playable media`);
+  provenClient = client;
+  provenAt = Date.now();
+}
+
+function provenRecently(client) {
+  return Boolean(client) && client === provenClient && Date.now() - provenAt < PROVEN_TTL_MS;
+}
+
+// `resolve` is a seam for test/playable.js, which needs to exercise the walk
+// without a network: the shape of the walk is the part that has been wrong.
+async function resolvePlayable(videoId, height,
+  { requireAvc = false, verify, resolve = resolveStreams } = {}) {
+  const failures = [];
+  // One attempt per client at most; the chain shortens as clients are stood
+  // down, so this terminates well before the bound in practice.
+  for (let attempt = 0; attempt <= CLIENT_CHAIN.length; attempt++) {
+    const streams = await resolve(videoId, height, { requireAvc });
+    if (!verify || provenRecently(streams.client)) return streams;
+
+    const result = await verify(streams);
+    if (result && result.ok) {
+      clientProven(streams.client);
+      return streams;
+    }
+
+    failures.push(`${streams.client}: ${(result && result.why) || 'reddedildi'}`);
+    // These URLs are no good and neither is the client that produced them, so
+    // the next resolve must not be handed either of them back.
+    forgetResolve(videoId);
+    clientRefused(streams.client);
+  }
+  throw new Error(`Hiçbir YouTube istemcisi oynatılabilir adres vermedi — ${failures.join('; ')}`);
 }
 
 // `%(.{a,b})j` asks yt-dlp for a JSON object holding just those fields, which
@@ -485,12 +560,17 @@ async function search(query, limit = 12) {
 }
 
 module.exports = {
-  parseVideoId, watchUrl, getMetadata, resolveStreams, forgetResolve, search,
-  feed, feedNames, activeClient, CLIENT_CHAIN, resolveWithClient, clientRefused,
+  parseVideoId, watchUrl, getMetadata, resolveStreams, resolvePlayable, forgetResolve, search,
+  feed, feedNames, activeClient, playingClient, CLIENT_CHAIN, resolveWithClient, clientRefused,
   exitAddresses,
   // For test/resolve.js. Silent misparsing here hands ffmpeg a URL with no
   // header, which is a 403 twenty seconds later and nothing in between; and a
   // chain that cannot stand a client down sits on a broken one indefinitely.
   _parseResolve: parseResolve,
-  _chain: { usableChain, refusedUntil, REFUSAL_TTL_MS },
+  _chain: {
+    usableChain, refusedUntil, REFUSAL_TTL_MS,
+    // Trust granted by a successful fetch. A suite that exercises the walk has
+    // to be able to start from no trust, the way a restart does.
+    resetProven() { provenClient = null; provenAt = 0; },
+  },
 };
