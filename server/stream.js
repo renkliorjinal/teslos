@@ -139,6 +139,31 @@ function reserveSlot() {
 // of the CPU.
 const IDLE_LIMIT_MS = 30000;
 
+// How long a stream may take to produce its very first frame. Deliberately kept
+// under the client's own startup patience, so that when a start really is
+// hopeless the server is the one to end it — and can say why, which a timeout
+// on the other end cannot.
+const STARTUP_LIMIT_MS = 40000;
+
+// What starting actually costs, measured rather than assumed. There is no point
+// guessing at a budget for something nobody has ever timed.
+const startups = [];
+
+function noteStartup(ms) {
+  startups.push(ms);
+  if (startups.length > 20) startups.shift();
+}
+
+function startupStats() {
+  if (!startups.length) return null;
+  const sorted = [...startups].sort((a, b) => a - b);
+  return {
+    seen: sorted.length,
+    medianMs: sorted[Math.floor(sorted.length / 2)],
+    worstMs: sorted[sorted.length - 1],
+  };
+}
+
 // Being quiet and being dead are not the same thing, and the difference is the
 // consumer. Both of them throttle by pausing this pipe — the socket writer when
 // the client reports its decoder full, Node's own pipe() when the browser stops
@@ -172,13 +197,21 @@ function reapReason(session, now) {
       ? `has been held by its consumer for ${Math.round(HELD_LIMIT_MS / 60000)} minutes`
       : null;
   }
+  // Starting is not stalling, and thirty seconds is a budget for the second.
+  //
+  // Before the first frame there is a proxy to tunnel through, an index to
+  // fetch — which for a two-hour video is not small — a seek to resolve and a
+  // transcode to spin up, none of which produce a byte by design. Reaping on
+  // the stall limit killed streams that were about to work, and the driver got
+  // "ffmpeg SIGKILL, hiç görüntü üretmedi" four times in a row on a video that
+  // played on the fifth.
+  if (!session.everProduced) {
+    return now - session.startedAt >= STARTUP_LIMIT_MS
+      ? `never produced a frame in ${STARTUP_LIMIT_MS / 1000}s`
+      : null;
+  }
   if (now - session.lastOutput < IDLE_LIMIT_MS) return null;
-  // Never started and stopped part-way are different faults with different
-  // causes, and the report said neither — only that ffmpeg had been killed,
-  // which is true of both and useful for neither.
-  return session.everProduced
-    ? `stopped producing ${IDLE_LIMIT_MS / 1000}s ago`
-    : `never produced a frame in ${IDLE_LIMIT_MS / 1000}s`;
+  return `stopped producing ${IDLE_LIMIT_MS / 1000}s ago`;
 }
 
 function reapTick(now = Date.now()) {
@@ -602,7 +635,12 @@ function spawnFfmpeg(args, label, pool, videoId, client) {
   // Doubles as the liveness signal the reaper reads.
   proc.stdout.on('data', (chunk) => {
     session.lastOutput = Date.now();
-    session.everProduced = true;
+    if (!session.everProduced) {
+      session.everProduced = true;
+      session.firstByteMs = session.lastOutput - session.startedAt;
+      noteStartup(session.firstByteMs);
+      console.log(`[ffmpeg] ${label} first frame after ${session.firstByteMs}ms`);
+    }
     produced += chunk.length;
   });
 
@@ -663,8 +701,8 @@ function spawnFfmpeg(args, label, pool, videoId, client) {
 
 module.exports = {
   startVideoStream, startDirectStream, startH264Stream, startAudioStream,
-  sessionCount, atCapacity, audioAtCapacity, makeAudioRoom, lastFailure,
+  sessionCount, atCapacity, audioAtCapacity, makeAudioRoom, lastFailure, startupStats,
   // For test/reaper.js. The sweep decides whether a working stream lives, so it
   // is worth testing directly rather than through forty seconds of ffmpeg.
-  _reap: { reapReason, reapTick, live, liveAudio, IDLE_LIMIT_MS, HELD_LIMIT_MS },
+  _reap: { reapReason, reapTick, live, liveAudio, IDLE_LIMIT_MS, HELD_LIMIT_MS, STARTUP_LIMIT_MS },
 };

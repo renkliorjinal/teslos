@@ -25,7 +25,7 @@ const helpers = require('./helpers');
 
 const rep = helpers.reporter();
 const { _reap } = require('../server/stream');
-const { reapTick, live, IDLE_LIMIT_MS, HELD_LIMIT_MS } = _reap;
+const { reapTick, live, IDLE_LIMIT_MS, HELD_LIMIT_MS, STARTUP_LIMIT_MS } = _reap;
 
 // Shaped like what spawnFfmpeg registers, minus the process.
 function fakeSession(label) {
@@ -33,9 +33,12 @@ function fakeSession(label) {
   const session = {
     stdout,
     label,
+    startedAt: Date.now(),
     lastOutput: Date.now(),
     held: false,
     heldSince: 0,
+    everProduced: false,
+    reapedFor: null,
     killed: false,
     stop() { this.killed = true; live.delete(this); },
   };
@@ -49,17 +52,47 @@ function clear() {
 
 // ------------------------------------------------------- a genuinely dead one
 //
-// The behaviour that must survive the fix: ffmpeg flowing and silent is ffmpeg
-// that is not coming back.
+// The behaviour that must survive every fix: ffmpeg flowing and silent is
+// ffmpeg that is not coming back.
 clear();
 {
   const dead = fakeSession('dead');
+  dead.everProduced = true;
   dead.stdout.resume(); // flowing, as spawnFfmpeg's own data listener leaves it
   const now = Date.now();
   dead.lastOutput = now - IDLE_LIMIT_MS - 1000;
   reapTick(now);
-  rep.check('a flowing stream that has gone silent is still collected', dead.killed);
+  rep.check('a stream that produced and then went silent is collected', dead.killed);
 }
+
+// ---------------------------------------------------------- one still starting
+//
+// Not the same thing, and treating it as such is what put "ffmpeg SIGKILL, hiç
+// görüntü üretmedi" on the screen four times in a row for a two-hour video that
+// played on the fifth attempt. Before the first frame there is a proxy to
+// tunnel, an index to fetch, a seek and a transcode to spin up, none of which
+// produce a byte by design.
+clear();
+{
+  const now = Date.now();
+  const starting = fakeSession('starting');
+  starting.startedAt = now - IDLE_LIMIT_MS - 5000;
+  starting.lastOutput = starting.startedAt;
+  reapTick(now);
+  rep.check('a stream still starting is given longer than one that stalled',
+    !starting.killed, `${(now - starting.startedAt) / 1000}s in, stall limit ${IDLE_LIMIT_MS / 1000}s`);
+
+  starting.startedAt = now - STARTUP_LIMIT_MS - 1000;
+  starting.lastOutput = starting.startedAt;
+  reapTick(now);
+  rep.check('but a start that never arrives is still ended', starting.killed);
+  rep.check('and says which limit it hit, not which signal was used',
+    /never produced a frame/.test(starting.reapedFor || ''), starting.reapedFor);
+}
+
+rep.check('the startup budget is longer than the stall budget',
+  STARTUP_LIMIT_MS > IDLE_LIMIT_MS,
+  `${STARTUP_LIMIT_MS / 1000}s vs ${IDLE_LIMIT_MS / 1000}s`);
 
 // ------------------------------------------------------------- and a held one
 //

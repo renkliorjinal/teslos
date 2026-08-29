@@ -56,6 +56,9 @@ router.get('/health', (req, res) => {
     // signed for one address and fetched from another is refused outright, so
     // "rotating": true is a diagnosis, not a statistic.
     proxyExit: youtube.exitAddresses(),
+    // What starting a stream actually costs. The startup budget was guessed at
+    // and guessed too low; this is so the next one is not.
+    startup: stream.startupStats(),
   });
 });
 

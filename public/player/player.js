@@ -89,6 +89,7 @@
     lastDataAt: 0,
     lastFrameAt: 0,
     outageTries: 0,
+    everFramed: false,   // has the current stream ever put a frame up?
     failureShown: null,   // last server-side explanation already toasted
     serverFailures: 0,    // rounds where the server answered and still sent nothing
     retries: 0,
@@ -496,6 +497,9 @@
     // let the reconnect loop hide it indefinitely.
     state.lastDataAt = Date.now();
     state.lastFrameAt = Date.now();
+    // A new stream is starting, whatever the last one managed — so it gets the
+    // startup budget again rather than the stall one.
+    state.everFramed = false;
     state.waiting = false;
     clearTimeout(state.reconnectTimer);
     el.recut.classList.remove('on');
@@ -810,6 +814,7 @@
           }
           frame.close();
           state.lastFrameAt = Date.now();
+          state.everFramed = true;
           pictureAlive();
         },
         error: function (err) {
@@ -938,6 +943,7 @@
         // seconds-held figure is derived from a nominal bitrate and reads low;
         // this is the decoder itself saying it had a frame to give.
         state.lastFrameAt = Date.now();
+        state.everFramed = true;
         pictureAlive();
       }
     };
@@ -1050,8 +1056,26 @@
    */
   var OUTAGE_AFTER_MS = 6000;
 
+  // Starting is not stalling, and this budget was only ever sized for stalling.
+  //
+  // The clock starts when the tap happens, and everything the server does comes
+  // out of it: resolving with yt-dlp, walking the client chain if the first one
+  // is refused, fetching a few hundred milliseconds of the URL to prove it
+  // works, then opening the real stream through the proxy, fetching the index —
+  // which for a two-hour video is not small — seeking, and spinning up a
+  // transcode. None of that produces a byte, by design. Six seconds is not a
+  // cold-start budget; it is barely a resolve. Spending it mid-startup tore
+  // down streams that were seconds from working, four times in a row, on a
+  // video that then played on the fifth attempt.
+  //
+  // Longer than the server's own startup limit on purpose: when a start really
+  // is hopeless, the server should be the one to end it, because it is the only
+  // end that knows why.
+  var STARTUP_GRACE_MS = 60000;
+
   function dataArriving() {
-    return Date.now() - state.lastDataAt < OUTAGE_AFTER_MS;
+    var budget = state.everFramed ? OUTAGE_AFTER_MS : STARTUP_GRACE_MS;
+    return Date.now() - state.lastDataAt < budget;
   }
 
   function enterOutage() {
