@@ -87,7 +87,22 @@ rep.check('refusing nothing is harmless',
   (youtube.clientRefused(null), youtube.clientRefused(undefined),
     usableChain().length === CHAIN.length));
 
-rep.check('the chain still leads with the clients that need no authentication',
-  CHAIN[0] === 'tv_simply', CHAIN.slice(0, 4).join(','));
+// The order is not cosmetic, and getting it wrong is not visible from anywhere
+// in this system: a client that needs a proof-of-origin token resolves happily
+// and hands back well-formed URLs, and only the fetch is refused, later, in
+// ffmpeg. The chain settles on it and stays. So the leaders are pinned here.
+//
+// Read out of the installed yt-dlp — INNERTUBE_CLIENTS[c].GVS_PO_TOKEN_POLICY —
+// not from memory. tv_downgraded is also token-free but requires a cookie jar.
+const NO_TOKEN_NEEDED = ['android_vr', 'tv', 'web_embedded'];
+
+rep.check('the chain leads with clients that need no proof-of-origin token',
+  NO_TOKEN_NEEDED.includes(CHAIN[0]), CHAIN.slice(0, 3).join(','));
+rep.check('and all three of them come before any client that does',
+  CHAIN.slice(0, 3).every((c) => NO_TOKEN_NEEDED.includes(c)), CHAIN.join(','));
+rep.check('android_vr leads, being the only one needing no JS player either',
+  CHAIN[0] === 'android_vr', CHAIN[0]);
+rep.check('tv_embedded is gone, since yt-dlp has no such client',
+  !CHAIN.includes('tv_embedded'));
 
 rep.done('clientchain');

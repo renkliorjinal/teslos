@@ -66,19 +66,34 @@ function runYtDlp(args, { timeout = 30000 } = {}) {
   });
 }
 
-// YouTube answers a datacenter IP with "Sign in to confirm you're not a bot",
-// which is fatal to every request this server makes. Impersonating a different
-// YouTube client often gets through where the default does not, and costs
-// nothing to try.
-//
-// The order puts first the clients that need neither authentication nor the JS
-// player, so they sidestep the proof-of-origin dance entirely.
-// The tail of the chain is reached only when everything ahead of it has already
-// failed, so extra candidates there cost nothing and have rescued this once
-// already: YouTube's SABR rollout leaves several clients returning formats with
-// no URL at all, and which ones those are changes without warning.
+/**
+ * Which YouTube client to impersonate, in the order that actually matters.
+ *
+ * This order was guessed at for a long time and the guess was wrong in a way
+ * that took days to see. yt-dlp knows, per client, whether googlevideo will
+ * serve the media without a proof-of-origin token — and a client that needs one
+ * still *resolves* perfectly happily. It hands back well-formed URLs and only
+ * the fetch is refused, minutes later, in ffmpeg. So the chain would settle on
+ * a client that could never play anything and stay there.
+ *
+ * Read out of the installed yt-dlp rather than remembered:
+ *
+ *   android_vr    no token, no auth, no JS player   <- the cheapest thing that works
+ *   tv            no token, no auth
+ *   web_embedded  no token, no auth
+ *   tv_downgraded no token, but needs a signed-in cookie jar
+ *   web, web_safari, web_music, web_creator, android, ios, mweb, tv_simply
+ *                 all REQUIRE a GVS token: they resolve, and then 403
+ *
+ * So the three that need nothing lead, and the rest are kept only as a last
+ * resort — they are still useful for metadata, which needs no token at all, and
+ * YouTube's policy moves often enough that today's refusal is not permanent.
+ *
+ * `tv_embedded` was in this list and is not a yt-dlp client at all; it was added
+ * on a hunch and would have failed every time it was reached.
+ */
 const CLIENT_CHAIN = (process.env.YT_DLP_CLIENTS
-  || 'tv_simply,android_vr,ios,android,tv,mweb,web_safari,tv_embedded,web_embedded,default')
+  || 'android_vr,tv,web_embedded,web_safari,mweb,android,ios,tv_simply,default')
   .split(',').map((s) => s.trim()).filter(Boolean);
 
 let preferredClient = null;
@@ -257,13 +272,16 @@ function cacheKey(videoId, height, requireAvc) {
  */
 function resolveArgs(format, videoId, opts) {
   return [...baseArgs(opts), '-f', format,
-    // Where the header actually lives, in the order it should be preferred.
-    // Asking only for the top-level one returned "NA" on the very case this
-    // exists for: selecting bestvideo+bestaudio produces a merge, and a merge
-    // keeps its headers per-format under requested_formats rather than hoisting
-    // them. The check duly skipped the probe that mattered and reported nothing.
-    // Comma-separated alternatives are yt-dlp's own "first one that exists".
-    '--print', '%(requested_formats.0.http_headers.User-Agent,http_headers.User-Agent,formats.0.http_headers.User-Agent)s',
+    // The whole header dict as JSON, because the obvious form does not work.
+    //
+    // `%(http_headers.User-Agent)s` returns NA, and so does every variation on
+    // it — twice now I assumed otherwise and shipped a fix that silently did
+    // nothing. yt-dlp's template parser accepts only word characters in a field
+    // path, and `User-Agent` has a hyphen in it, so the key can never be
+    // addressed that way. Asking for the dict with the `j` conversion sidesteps
+    // the parser entirely and works for a merge and a single format alike.
+    // Verified against yt-dlp's own evaluate_outtmpl rather than assumed.
+    '--print', '%(requested_formats.0.http_headers,http_headers)j',
     '-g', watchUrl(videoId)];
 }
 
@@ -318,9 +336,25 @@ function parseResolve(out) {
   const lines = out.trim().split('\n').map((s) => s.trim()).filter(Boolean);
   const urls = lines.filter((s) => /^https?:/i.test(s));
   if (urls.length === 0) return null;
-  // Anything that is not a URL is the header line. "NA" is what yt-dlp prints
-  // for a field the extractor did not set, and is not a User-Agent.
-  const userAgent = lines.find((s) => !/^https?:/i.test(s) && s !== 'NA') || null;
+
+  // The header dict arrives as one JSON line among the URLs. "NA" is what
+  // yt-dlp prints for a field the extractor did not set.
+  let userAgent = null;
+  for (const line of lines) {
+    if (!line.startsWith('{')) continue;
+    try {
+      const headers = JSON.parse(line);
+      userAgent = headers['User-Agent'] || headers['user-agent'] || null;
+    } catch {
+      // Not the header line after all.
+    }
+    if (userAgent) break;
+  }
+  // Older shape, and the plain-string print this replaced: a bare non-URL line.
+  if (!userAgent) {
+    userAgent = lines.find((s) => !/^https?:/i.test(s) && !s.startsWith('{') && s !== 'NA') || null;
+  }
+
   return urls.length === 1
     ? { video: urls[0], audio: null, userAgent }
     : { video: urls[0], audio: urls[1], userAgent };

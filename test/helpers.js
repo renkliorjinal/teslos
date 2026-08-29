@@ -100,7 +100,7 @@ function fakeYtDlp({ url, id = 'dQw4w9WgXcQ', title = 'Test klip', duration = 12
   const file = path.join(FIXTURES, `yt-dlp-${id}-${Math.random().toString(36).slice(2, 8)}`);
   const count = countFile ? `echo x >> ${JSON.stringify(countFile)}\n` : '';
   fs.writeFileSync(file, `#!/usr/bin/env bash
-${count}for a in "$@"; do case "$a" in -g) echo 'Mozilla/5.0 (teslos-test)'; echo ${JSON.stringify(url)}; exit 0 ;; esac; done
+${count}for a in "$@"; do case "$a" in -g) echo '{"User-Agent":"Mozilla/5.0 (teslos-test)"}'; echo ${JSON.stringify(url)}; exit 0 ;; esac; done
 echo '{"id":"${id}","title":"${title}","duration":${duration},"is_live":false,"uploader":"${uploader}","thumbnail":""}'
 `, { mode: 0o755 });
   process.env.YT_DLP = file;

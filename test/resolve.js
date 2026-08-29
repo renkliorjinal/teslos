@@ -17,20 +17,23 @@ const helpers = require('./helpers');
 const rep = helpers.reporter();
 const { _parseResolve: parse } = require('../server/youtube');
 
-const UA = 'com.google.android.apps.youtube.vr.oculus/1.62.27 (Linux; U; Android 12L) gzip';
+const UA = 'com.google.android.apps.youtube.vr.oculus/1.65.10 (Linux; U; Android 12L) gzip';
+// What yt-dlp actually prints: the header dict, as JSON, because `User-Agent`
+// has a hyphen and can never be addressed as a template field path.
+const H = JSON.stringify({ 'User-Agent': UA, 'Accept-Language': 'en-us,en;q=0.5' });
 const V = 'https://rr5---sn-pouxga5o.googlevideo.com/videoplayback?expire=1&itag=136';
 const A = 'https://rr5---sn-pouxga5o.googlevideo.com/videoplayback?expire=1&itag=140';
 
 // DASH: the usual case. One header line, then video and audio.
 {
-  const r = parse(`${UA}\n${V}\n${A}\n`);
+  const r = parse(`${H}\n${V}\n${A}\n`);
   rep.check('separate video and audio come back in order', r.video === V && r.audio === A);
   rep.check('and carry the header they must be fetched with', r.userAgent === UA);
 }
 
 // Progressive: one muxed URL, no second stream.
 {
-  const r = parse(`${UA}\n${V}\n`);
+  const r = parse(`${H}\n${V}\n`);
   rep.check('a single muxed URL leaves audio null', r.video === V && r.audio === null);
   rep.check('and still carries the header', r.userAgent === UA);
 }
@@ -38,7 +41,7 @@ const A = 'https://rr5---sn-pouxga5o.googlevideo.com/videoplayback?expire=1&itag
 // --print and -g are an ordered list, and one release reordering them must not
 // silently cost the header.
 {
-  const r = parse(`${V}\n${A}\n${UA}\n`);
+  const r = parse(`${V}\n${A}\n${H}\n`);
   rep.check('the header is found whichever end it is printed at',
     r.userAgent === UA && r.video === V && r.audio === A);
 }
@@ -59,9 +62,16 @@ const A = 'https://rr5---sn-pouxga5o.googlevideo.com/videoplayback?expire=1&itag
   rep.check('with the header simply absent', r.userAgent === null);
 }
 
+// A bare User-Agent line, which is what the earlier --print produced. Kept
+// working so a rollback or an older yt-dlp does not silently drop the header.
+{
+  const r = parse(`${UA}\n${V}\n${A}\n`);
+  rep.check('a plain header line is still understood', r.userAgent === UA);
+}
+
 // Blank lines and trailing whitespace, which yt-dlp emits freely.
 {
-  const r = parse(`\n  ${UA}  \n\n  ${V}  \n${A}\n\n`);
+  const r = parse(`\n  ${H}  \n\n  ${V}  \n${A}\n\n`);
   rep.check('whitespace and blank lines are tolerated',
     r.video === V && r.audio === A && r.userAgent === UA);
 }
@@ -69,7 +79,7 @@ const A = 'https://rr5---sn-pouxga5o.googlevideo.com/videoplayback?expire=1&itag
 // Nothing usable is a failure the caller must be able to see, not an object
 // full of undefined that reaches ffmpeg.
 {
-  rep.check('no URL at all returns null rather than a broken object', parse(UA) === null);
+  rep.check('no URL at all returns null rather than a broken object', parse(H) === null);
   rep.check('and so does empty output', parse('') === null);
 }
 
