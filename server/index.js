@@ -146,26 +146,54 @@ wss.on('connection', async (ws, req) => {
   // So the client reports how many seconds it is holding, and the server stops
   // sending once that is comfortable. The over-rate then only applies while
   // there is room for it.
-  const HIGH_WATER = 2 * 1024 * 1024;
-  const LOW_WATER = 512 * 1024;
-  const BUFFER_FULL_S = 12;
-  const BUFFER_HUNGRY_S = 6;
+  // How much the client is allowed to hold, which turns out to be the whole
+  // question behind "why does it not buffer".
+  //
+  // It does buffer — the decoder's ring is 8 MB, some sixty-four seconds at
+  // 480p — and this end was refusing to fill more than twelve of them. Twelve
+  // seconds is a cushion for a hiccup, not for a transcode that occasionally
+  // dips below realtime, and a transcode that dips is exactly what a single
+  // core does. The picture spends the cushion, starves, and the stream is
+  // re-cut: the clock keeps running off the soundtrack while the picture goes
+  // away and comes back, which from the driver's seat is "it keeps saying
+  // connecting while the seconds carry on".
+  //
+  // The twelve was set when the over-rate was overrunning a decoder that then
+  // evicted undecoded frames. That is a real failure and the reason there is a
+  // ceiling at all — but the ceiling belongs near the ring's capacity, not at a
+  // fifth of it.
+  const HIGH_WATER = 4 * 1024 * 1024;
+  const LOW_WATER = 1024 * 1024;
   // The decoder's ring buffer as a fraction of capacity, which is the quantity
   // that actually decides whether frames get evicted. Preferred over the
   // seconds estimate whenever the client can produce it, since it needs no
-  // agreement about what the bitrate is.
-  const RING_FULL = 0.6;
-  const RING_HUNGRY = 0.35;
+  // agreement about what the bitrate is. Kept clear of full: the eviction this
+  // guards against is silent and costs picture, so the last quarter stays spare.
+  const RING_FULL = 0.75;
+  const RING_HUNGRY = 0.55;
+  const preset = config.QUALITY[quality] || config.QUALITY[config.DEFAULT_QUALITY];
+  const byteRate = ((parseInt(preset.videoBitrate, 10) * 1000)
+    + (withAudio ? 128000 : 0)) * 1.06 / 8;
+
+  // What the ring is worth in seconds, which is not a constant: the client's
+  // buffer is 8 MB of bytes (player.js, videoBufferSize), and that is a minute
+  // at 480p and half of one at 720p. Deriving the seconds cap from it keeps the
+  // two ends agreeing at every preset rather than only at the one the number
+  // was picked for — a fixed 45 would be unreachable at 720p and meaningless at
+  // 1080p, leaving the ring fraction as the only working brake.
+  const RING_BYTES = 8 * 1024 * 1024;
+  const ringSeconds = RING_BYTES / byteRate;
+  const BUFFER_FULL_S = Math.max(12, ringSeconds * RING_FULL);
+  const BUFFER_HUNGRY_S = Math.max(6, ringSeconds * RING_HUNGRY);
+
   // A second, independent ceiling, measured from this end alone: how far the
   // bytes written have run ahead of the wall clock. The client's report is the
   // better signal when it arrives, but a page cached from before it existed
   // never sends one, and being wrong about that means overrunning its buffer.
-  const LEAD_CAP_S = 18;
-  const LEAD_RESUME_S = 12;
-
-  const preset = config.QUALITY[quality] || config.QUALITY[config.DEFAULT_QUALITY];
-  const byteRate = ((parseInt(preset.videoBitrate, 10) * 1000)
-    + (withAudio ? 128000 : 0)) * 1.06 / 8;
+  // Sized off the same ring, with room to spare so it is the backstop rather
+  // than the thing that fires first.
+  const LEAD_CAP_S = ringSeconds * 0.9;
+  const LEAD_RESUME_S = ringSeconds * 0.6;
   const startedAt = Date.now();
   let sentBytes = 0;
 

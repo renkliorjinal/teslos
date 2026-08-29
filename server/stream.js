@@ -23,8 +23,14 @@ const youtube = require('./youtube');
 // Both ends cap how far ahead this may get — the client reports its buffer and
 // the server watches its own lead — so the rate can be high enough to refill a
 // stall quickly rather than over the following minute.
-const READ_RATE = process.env.READ_RATE || '1.5';
-const INITIAL_BURST = process.env.READ_BURST || '8';
+// Raised once the client was actually allowed to keep what it was sent. At 1.5x
+// a forty-five second cushion takes ninety seconds to build, which leaves the
+// first two minutes — the part the driver notices — with no protection at all.
+// On a core that is already the bottleneck this costs nothing: ffmpeg becomes
+// encode-bound and reads no faster than it can encode. Where there is headroom,
+// it uses it.
+const READ_RATE = process.env.READ_RATE || '2.0';
+const INITIAL_BURST = process.env.READ_BURST || '25';
 
 // `error` was too quiet to debug from a car. ffmpeg reports a refused fetch at
 // warning level in several of its paths, so the one stream that mattered most
