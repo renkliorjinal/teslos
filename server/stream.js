@@ -164,6 +164,35 @@ function startupStats() {
   };
 }
 
+/**
+ * Whether the transcode is keeping up with the clock.
+ *
+ * This is the difference between a picture that holds and one that freezes
+ * every few minutes, and until now nothing measured it. A transcode running at
+ * 0.97x does not fail; it starves. The picture falls a little further behind
+ * the soundtrack every minute until the drift crosses the client's tolerance
+ * and the stream is re-cut — a freeze, a reconnect, and no error anywhere.
+ *
+ * Measured from output bytes against the preset's own bitrate, which is what
+ * the encoder was told to hit, so the ratio is seconds of media produced per
+ * second of wall clock. Above 1 there is headroom; at or below it, the box
+ * cannot do this job at this quality and no amount of buffering will hide it.
+ *
+ * Excludes held time, since a stream the consumer has paused is not slow.
+ */
+function realtimeFactor(session) {
+  const elapsed = (Date.now() - session.startedAt - session.heldMs) / 1000;
+  if (elapsed < 5 || !session.byteRate) return null;
+  return Number(((session.produced / session.byteRate) / elapsed).toFixed(2));
+}
+
+function transcodeSpeed() {
+  const rates = [...live]
+    .map((s) => ({ label: s.label, x: realtimeFactor(s) }))
+    .filter((r) => r.x !== null);
+  return rates.length ? rates : null;
+}
+
 // Being quiet and being dead are not the same thing, and the difference is the
 // consumer. Both of them throttle by pausing this pipe — the socket writer when
 // the client reports its decoder full, Node's own pipe() when the browser stops
@@ -221,6 +250,9 @@ function reapTick(now = Date.now()) {
 
     if (held) {
       if (!session.held) session.heldSince = now;
+      // Held time is not slow time: a stream its consumer has paused should not
+      // be counted against the transcode's realtime factor.
+      session.heldMs += 5000;
       // The idle clock measures ffmpeg's silence, so it must not run while the
       // consumer is the one keeping it quiet — otherwise a stream resuming from
       // a long hold would be reaped on its first tick back.
@@ -378,7 +410,10 @@ async function startVideoStream({ videoId, quality, startTime = 0, withAudio = t
       '-',
     );
 
-    return spawnFfmpeg(args, `video ${videoId}@${quality}p t=${startTime}`, 'video', videoId, streams.client);
+    const byteRate = ((parseInt(preset.videoBitrate, 10) * 1000)
+      + (withAudio ? 128000 : 0)) * 1.06 / 8;
+    return spawnFfmpeg(args, `video ${videoId}@${quality}p t=${startTime}`,
+      'video', videoId, streams.client, byteRate);
   } finally {
     releaseSlot();
   }
@@ -596,10 +631,9 @@ function lastFailure() {
   return failure;
 }
 
-function spawnFfmpeg(args, label, pool, videoId, client) {
+function spawnFfmpeg(args, label, pool, videoId, client, byteRate) {
   const proc = spawn(config.ffmpeg, args, { stdio: ['ignore', 'pipe', 'pipe'] });
   const group = pool === 'audio' ? liveAudio : live;
-  let produced = 0;
 
   const session = {
     proc,
@@ -613,6 +647,11 @@ function spawnFfmpeg(args, label, pool, videoId, client) {
     heldSince: 0,
     everProduced: false,
     reapedFor: null,
+    // For the realtime measure: bytes out, time the consumer held the pipe
+    // shut, and the rate the encoder was told to hit.
+    produced: 0,
+    heldMs: 0,
+    byteRate: byteRate || 0,
     stop() {
       try {
         proc.kill('SIGKILL');
@@ -641,7 +680,7 @@ function spawnFfmpeg(args, label, pool, videoId, client) {
       noteStartup(session.firstByteMs);
       console.log(`[ffmpeg] ${label} first frame after ${session.firstByteMs}ms`);
     }
-    produced += chunk.length;
+    session.produced += chunk.length;
   });
 
   let stderrTail = '';
@@ -659,9 +698,9 @@ function spawnFfmpeg(args, label, pool, videoId, client) {
     // Nothing came out at all, or the CDN went sour midway. Either way the media
     // URL this was built from is not worth handing to the next attempt.
     const suspect = /40[0-9] |403|Forbidden|Server returned|Invalid data/i.test(stderrTail);
-    if (videoId && (produced === 0 || suspect)) {
+    if (videoId && (session.produced === 0 || suspect)) {
       youtube.forgetResolve(videoId);
-      console.warn(`[ffmpeg] ${label} produced ${produced} bytes; dropped its cached URLs`);
+      console.warn(`[ffmpeg] ${label} produced ${session.produced} bytes; dropped its cached URLs`);
     }
     // Dropping the URLs is not enough on its own: the same client resolves the
     // same video again and hands back URLs the CDN refuses for the same reason,
@@ -678,7 +717,7 @@ function spawnFfmpeg(args, label, pool, videoId, client) {
     // is going to get, so it is kept where the player can reach it — and if we
     // were the ones who killed it, say what for. "SIGKILL" describes the method
     // and not the fault, and was the whole of one failure report.
-    if (produced === 0) {
+    if (session.produced === 0) {
       session.failure = tail
         || (session.reapedFor && `ffmpeg ${session.reapedFor}`)
         || (signal
@@ -702,6 +741,7 @@ function spawnFfmpeg(args, label, pool, videoId, client) {
 module.exports = {
   startVideoStream, startDirectStream, startH264Stream, startAudioStream,
   sessionCount, atCapacity, audioAtCapacity, makeAudioRoom, lastFailure, startupStats,
+  transcodeSpeed,
   // For test/reaper.js. The sweep decides whether a working stream lives, so it
   // is worth testing directly rather than through forty seconds of ffmpeg.
   _reap: { reapReason, reapTick, live, liveAudio, IDLE_LIMIT_MS, HELD_LIMIT_MS, STARTUP_LIMIT_MS },

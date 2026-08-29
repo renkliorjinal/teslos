@@ -59,6 +59,10 @@ router.get('/health', (req, res) => {
     // What starting a stream actually costs. The startup budget was guessed at
     // and guessed too low; this is so the next one is not.
     startup: stream.startupStats(),
+    // Seconds of media produced per second of wall clock, per live stream.
+    // Below 1 the picture starves and gets re-cut every few minutes, which is
+    // a freeze and a reconnect with nothing in any log to explain it.
+    speed: stream.transcodeSpeed(),
   });
 });
 

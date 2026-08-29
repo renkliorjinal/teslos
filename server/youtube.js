@@ -462,6 +462,23 @@ async function resolveStreams(videoId, height, { requireAvc = false } = {}) {
       `best[height<=${height}][vcodec^=avc1][acodec^=mp4a]`,
     ].join('/')
     : [
+      // H.264 first, and not for quality — for the droplet's single core.
+      //
+      // "best" at a given height is almost always VP9, which YouTube encodes at
+      // a lower bitrate for the same picture. That is the right trade for a
+      // browser with hardware decoding and the wrong one here, because this
+      // frame is going to be decoded in software and re-encoded to MPEG-1, and
+      // VP9 decode costs several times what H.264 does. When that pushes the
+      // transcode below realtime the picture does not fail, it slowly starves:
+      // it falls a little further behind the soundtrack every minute until the
+      // drift crosses five seconds and the whole stream is re-cut. From the
+      // driver's seat that is a freeze and a reconnect every two to five
+      // minutes, forever, with nothing in any log to say why.
+      //
+      // Slightly larger files, several times less CPU. AV1 stays excluded
+      // outright; software AV1 decode is hopeless here at any bitrate.
+      `bestvideo[height<=${height}][vcodec^=avc1]+bestaudio[acodec^=mp4a]`,
+      `bestvideo[height<=${height}][vcodec^=avc1]+bestaudio`,
       `bestvideo[height<=${height}][vcodec!*=av01]+bestaudio`,
       `best[height<=${height}]`,
       'best',
